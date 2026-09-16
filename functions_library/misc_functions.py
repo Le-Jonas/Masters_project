@@ -2,8 +2,15 @@ import numpy as np
 import torch
 
 def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
-    sample_size = min(sample_size, len(dataset))
-    indices = np.random.choice(len(dataset), sample_size, replace=False)
+    num_batches = sample_size // batch_size
+    num_avaliable_batches = len(dataset) // batch_size
+    if num_batches > num_avaliable_batches:
+        raise ValueError(f"Sample size {sample_size} is too large for the dataset size {len(dataset)}. "
+                         f"Maximum sample size is {num_avaliable_batches * batch_size}.")
+    
+    batch_indices = np.random.choice(num_avaliable_batches, num_batches, replace=False)
+    indices = np.concatenate([np.arange(batch * batch_size, (batch + 1) * batch_size) for batch in batch_indices])
+    indices.sort()
 
     feature_sum = None
     feature_squared_sum = None

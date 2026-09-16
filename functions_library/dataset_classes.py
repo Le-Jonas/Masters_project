@@ -297,9 +297,9 @@ class H5EgammaDataset_fully_batched(Dataset):
             handle.close()
         self.handles.clear()
 
-class csvDataset(Dataset):
-    def __init__(self, csv_file_path):
-        self.data = np.loadtxt(csv_file_path, delimiter=',', skiprows=1, dtype=np.float32)
+class npyDataset(Dataset):
+    def __init__(self, npy_file_path):
+        self.data = np.load(npy_file_path)
         self.features = self.data[:, :-1]
         self.targets = self.data[:, -1]
 

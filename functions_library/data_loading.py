@@ -104,7 +104,7 @@ def h5_to_csv(h5_file_path, csv_file_path, y_source, y_field, exclude_features=N
         csv_file.write(','.join(dataset.fields + [target_name]) + '\n')
 
         # Write data rows
-        Writing_time_start = time.perf_counter()
+        writing_time_start = time.perf_counter()
         for batch, (features, target) in enumerate(loader):
             for feature_row, target_value in zip(features.numpy(), target.numpy()):
                 if np.isnan(target_value):  # Check for NaN values in target
@@ -112,7 +112,7 @@ def h5_to_csv(h5_file_path, csv_file_path, y_source, y_field, exclude_features=N
                 feature_row = np.nan_to_num((feature_row-means)/stds, nan=0.0)  # Replace NaN values in features with 0.0
                 row = np.concatenate((feature_row, [target_value]))
                 csv_file.write(','.join(map(str, row)) + '\n')
-            elapsed_time = time.perf_counter() - Writing_time_start
+            elapsed_time = time.perf_counter() - writing_time_start
             completion_percentage = (batch + 1) / len(loader)
             estimated_total_time = elapsed_time / completion_percentage
             estimated_time_remaining = estimated_total_time - elapsed_time
@@ -138,6 +138,9 @@ def h5_to_npy(h5_file_path, npy_file_path, y_source, y_field, exclude_features=N
         raise FileNotFoundError(f"No H5 files found in {h5_file_path}")
     if mix_h5_file_path is not None and not mix_h5_files:
         raise FileNotFoundError(f"No H5 files found in {mix_h5_file_path}")
+    print(f"Creating dataset from {len(h5_files)} H5 files", end='\r')
+    if mix_h5_files is not None:
+        print(f"Mixing with {len(mix_h5_files)} H5 files at ratio {mixture_ratio}", end='\r')
 
     dataset = _class_.H5EgammaDataset_fully_batched(
         files=h5_files,
@@ -153,11 +156,14 @@ def h5_to_npy(h5_file_path, npy_file_path, y_source, y_field, exclude_features=N
     )
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+    print(f"Calculating mean and std for normalization using sample size {sample_size}", end='\r')
     means, stds = _misc_.compute_mean_std(
         dataset,
         sample_size=sample_size,
         batch_size=batch_size,
     )
+
     output = np.lib.format.open_memmap(
         npy_file_path,
         mode="w+",
@@ -166,12 +172,19 @@ def h5_to_npy(h5_file_path, npy_file_path, y_source, y_field, exclude_features=N
     )
 
     row_start = 0
-    for features, target in loader:
+    writing_time_start = time.perf_counter()
+    for batching, (features, target) in enumerate(loader):
         features = torch.nan_to_num((features - means) / stds, nan=0.0)
         batch = torch.cat((features, target.unsqueeze(1)), dim=1).numpy()
         row_end = row_start + len(batch)
         output[row_start:row_end] = batch
         row_start = row_end
+
+        elapsed_time = time.perf_counter() - writing_time_start
+        completion_percentage = (batching + 1) / len(loader)
+        estimated_total_time = elapsed_time / completion_percentage
+        estimated_time_remaining = estimated_total_time - elapsed_time
+        print(f'Writing batch {batching+1}/{len(loader)}, estimated time to completion: {estimated_time_remaining:.0f} seconds', end='\r')
 
     output.flush()
     del output
