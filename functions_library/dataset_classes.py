@@ -101,6 +101,18 @@ class H5EgammaDataset_fully_batched(Dataset):
 
         self.offsets = np.concatenate(([0], np.cumsum(self.lengths)))
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["handles"] = {}
+        state["eventwise_cache"] = {}
+        state["eventwise_features_cache"] = {}
+        return state
+
+    def _get_handle(self, file_index):
+        if file_index not in self.handles:
+            self.handles[file_index] = h5py.File(self.files[file_index], "r")
+        return self.handles[file_index]
+
     def _apply_mixture(self, mixture_ratio, mixture_seed):
         source_rows = [
             np.concatenate([
@@ -153,9 +165,7 @@ class H5EgammaDataset_fully_batched(Dataset):
         file_index = np.searchsorted(self.offsets, index, side="right") - 1
         filtered_index = int(index - self.offsets[file_index])
         local_index = int(self.valid_rows[file_index][filtered_index])
-        if file_index not in self.handles:
-            self.handles[file_index] = h5py.File(self.files[file_index], "r")
-        return file_index, self.handles[file_index], local_index
+        return file_index, self._get_handle(file_index), local_index
 
     def _selected_field_names(self, dataset_name, field_names):
         excluded = set(self.exclude_fields)
@@ -204,10 +214,20 @@ class H5EgammaDataset_fully_batched(Dataset):
             first = int(sorted_indices[start])
             last = int(sorted_indices[end - 1]) + 1
             relative_indices = sorted_indices[start:end] - first
+            contiguous = np.array_equal(
+                relative_indices,
+                np.arange(len(relative_indices), dtype=np.int64),
+            )
             for name in self.features:
-                rows[name].append(h5_file[name][first:last][relative_indices])
+                if contiguous:
+                    rows[name].append(h5_file[name][first:last])
+                else:
+                    rows[name].append(h5_file[name][first:last][relative_indices])
             if self.y_source != "eventwise" and not self.mix_files:
-                target.append(h5_file[self.y_source][self.y_field][first:last][relative_indices])
+                if contiguous:
+                    target.append(h5_file[self.y_source][self.y_field][first:last])
+                else:
+                    target.append(h5_file[self.y_source][self.y_field][first:last][relative_indices])
         if self.mix_files:
             target = np.full(len(sorted_indices), self.file_labels[file_index], dtype=np.float32)
             return {name: np.concatenate(rows[name]) for name in self.features}, target, sort_order
@@ -216,7 +236,7 @@ class H5EgammaDataset_fully_batched(Dataset):
         return {name: np.concatenate(rows[name]) for name in self.features}, np.concatenate(target), sort_order
 
     #This function groups a single data row into a torch tensor of features and a torch tensor of the target variable. It can also read the h5 file if no data is set yet.
-    def _read_one(self, h5_file, local_index, eventwise=None, first_indices=None, rows=None, target=None):
+    def _read_one(self, h5_file, local_index, eventwise=None, first_indices=None, rows=None, target=None, eventwise_features=None):
         
         if eventwise is None:
             eventwise = h5_file["eventwise"][:]
@@ -236,7 +256,16 @@ class H5EgammaDataset_fully_batched(Dataset):
             for name in self.features
         ]
 
-        feature_arrays.append(self._structured_to_array(eventwise[event_index], "eventwise"))
+        if eventwise_features is None:
+            eventwise_features = self._structured_to_array(eventwise[event_index], "eventwise")
+        elif isinstance(eventwise_features, dict):
+            eventwise_features = eventwise_features.setdefault(
+                event_index,
+                self._structured_to_array(eventwise[event_index], "eventwise"),
+            )
+        else:
+            eventwise_features = eventwise_features[event_index]
+        feature_arrays.append(eventwise_features)
         features = np.concatenate(feature_arrays)
         
                
@@ -265,15 +294,18 @@ class H5EgammaDataset_fully_batched(Dataset):
 
         if not hasattr(self, "eventwise_cache"):
             self.eventwise_cache = {}
+        if not hasattr(self, "eventwise_features_cache"):
+            self.eventwise_features_cache = {}
 
         batch = [None] * len(indices)
         for file_index, positions in grouped.items():
-            if file_index not in self.handles:
-                self.handles[file_index] = h5py.File(self.files[file_index], "r")
-            h5_file = self.handles[file_index]
+            h5_file = self._get_handle(file_index)
             if file_index not in self.eventwise_cache:
                 self.eventwise_cache[file_index] = h5_file["eventwise"][:]
             eventwise = self.eventwise_cache[file_index]
+            if file_index not in self.eventwise_features_cache:
+                self.eventwise_features_cache[file_index] = {}
+            eventwise_features = self.eventwise_features_cache[file_index]
             local_indices = np.array([local_index for _, local_index in positions])
             rows, target, sort_order = self._read_aligned_rows(h5_file, local_indices, file_index)
             sorted_indices = np.sort(local_indices)
@@ -287,6 +319,7 @@ class H5EgammaDataset_fully_batched(Dataset):
                     first_indices,
                     {name: rows[name][sorted_position] for name in rows},
                     target[sorted_position],
+                    eventwise_features,
                 )
 
         return batch
