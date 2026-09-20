@@ -16,7 +16,7 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
     feature_squared_sum = None
     count = 0
 
-    for start in range(0, sample_size, batch_size):
+    for start in range(0, len(indices), batch_size):
         batch_indices = indices[start:start + batch_size]
         sampled_data = dataset.__getitems__(batch_indices)
 
@@ -34,6 +34,8 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
         feature_sum += safe_features.sum(dim=0)
         feature_squared_sum += (safe_features ** 2).sum(dim=0)
         count += finite.sum(dim=0)
+
+        print(f"Calculating mean and std for normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
 
     means = feature_sum / count
     variances = feature_squared_sum / count - means ** 2
