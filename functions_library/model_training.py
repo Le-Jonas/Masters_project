@@ -29,22 +29,25 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
 
             optimizer.zero_grad()
             outputs = model(inputs)
-            loss = loss_function(outputs.squeeze(), targets)
+            if outputs.shape[-1] == 1:
+                outputs = outputs.reshape(-1)  # Flatten outputs if they have a single output dimension
+                targets = targets.reshape(-1)  # Flatten targets if they have a single output dimension
+            loss = loss_function(outputs, targets)
             loss.backward()
             optimizer.step()
 
             running_loss += loss.item() * inputs.size(0)
             batch_losses[epoch].append(loss.item())
 
-            print(f'Batch {batch+1}/{len(train_loader)}, Loss: {loss.item():.0f}', end='\r')
+            print(f'Batch {batch+1}/{len(train_loader)}, Loss: {loss.item():.4f}', end='\r')
 
         epoch_loss = running_loss / len(train_loader.dataset)
 
-        val_loss = validate_model(model, loss_function, val_loader, device, means, stds)
+        val_loss = validate_model(model, loss_function, val_loader, device, means, stds, log_target=log_target)
         val_losses.append(val_loss)
         train_losses.append(epoch_loss)
 
-        print(f'Epoch {epoch+1}/{num_epochs}, Training Loss: {epoch_loss:.0f}, Validation Loss: {val_loss:.0f}')
+        print(f'Epoch {epoch+1}/{num_epochs}, Training Loss: {epoch_loss:.4f}, Validation Loss: {val_loss:.4f}')
 
         # Save the best model based on validation loss
         if val_loss < best_val_loss:
@@ -69,7 +72,7 @@ def validate_model(model, loss_function, val_loader, device='cpu', means=None, s
             for inputs, targets in val_loader:
                 inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
                 if log_target:
-                    targets = torch.log(targets + 1e-8)  # Add a small constant to avoid log(0)
+                    targets = torch.log1p(targets)
 
                 if not torch.isfinite(targets).all():
                     raise ValueError(f"Warning: Non-finite values detected in targets")
@@ -80,7 +83,10 @@ def validate_model(model, loss_function, val_loader, device='cpu', means=None, s
                 inputs = torch.nan_to_num(inputs, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
 
                 outputs = model(inputs)
-                loss = loss_function(outputs.squeeze(), targets)
+                if outputs.shape[-1] == 1:
+                    outputs = outputs.reshape(-1)  # Flatten outputs if they have a single output dimension
+                    targets = targets.reshape(-1)  # Flatten targets if they have a single output dimension
+                loss = loss_function(outputs, targets)
                 val_loss += loss.item() * inputs.size(0)
 
         val_loss /= len(val_loader.dataset)

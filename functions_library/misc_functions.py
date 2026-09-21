@@ -47,4 +47,4 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
         torch.ones_like(stds),
     )
 
-    return means.float().numpy(), stds.float().numpy()
+    return means.float(), stds.float()

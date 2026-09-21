@@ -1,6 +1,7 @@
 import h5py
 import numpy as np
 from pathlib import Path
+from sqlalchemy import values
 from torch.utils.data import Dataset 
 import torch
 
@@ -42,7 +43,7 @@ class H5EgammaDataset_fully_batched(Dataset):
         self.file_labels = [0] * len(self.files) + [1] * len(self.mix_files)
         self.files.extend(self.mix_files)
         self.y_source = y_source
-        self.y_field = y_field
+        self.y_fields = [y_field] if isinstance(y_field, str) else list(y_field)
         self.exclude_fields = set(exclude_fields or [])
         self.include_fields = set(include_fields) if include_fields is not None else None
         self.valid_rows = []
@@ -91,8 +92,8 @@ class H5EgammaDataset_fully_batched(Dataset):
                 }
                 if len(set(lengths.values())) != 1:
                     raise ValueError(f"Event data not aligned in {path}")
-                target = np.asarray(h5_file[self.y_source][self.y_field][:])
-                valid_rows = np.flatnonzero(np.isfinite(target))
+                target = self._read_target(h5_file, slice(None))
+                valid_rows = np.flatnonzero(np.isfinite(target).all(axis=-1))
                 self.lengths.append(len(valid_rows))
                 self.valid_rows.append(valid_rows)
 
@@ -170,11 +171,18 @@ class H5EgammaDataset_fully_batched(Dataset):
     def _selected_field_names(self, dataset_name, field_names):
         excluded = set(self.exclude_fields)
         if dataset_name == self.y_source:
-            excluded.add(self.y_field)
+            excluded.apdate(self.y_fields)
 
         if self.include_fields is not None:
             return [name for name in field_names if name in self.include_fields and name not in excluded]
         return [name for name in field_names if name not in excluded]
+
+    def _read_target(self, h5_file, indices):
+        values = [
+            np.asarray(h5_file[self.y_source][field][indices], dtype=np.float32)
+            for field in self.y_fields
+        ]
+        return np.stack(values, axis=-1)
 
     #Converts a structured row to a flat array using the same field selection as the header.
     def _structured_to_array(self, rows, dataset_name):
@@ -204,7 +212,13 @@ class H5EgammaDataset_fully_batched(Dataset):
             elif self.y_source == "eventwise":
                 target = [None] * len(sorted_indices)
             else:
-                target = h5_file[self.y_source][self.y_field][sorted_indices]
+                target = target = np.stack(
+                    [
+                        np.asarray(h5_file[self.y_source][field][sorted_indices], dtype=np.float32)
+                        for field in self.y_fields
+                    ],
+                    axis=-1,
+                )
             return {name: h5_file[name][sorted_indices] for name in self.features}, target, sort_order
 
         #This part takes care of the contigous reads. Reading a batch of 32 rows in one go reduces computation from 8s to 0.2s
@@ -225,9 +239,25 @@ class H5EgammaDataset_fully_batched(Dataset):
                     rows[name].append(h5_file[name][first:last][relative_indices])
             if self.y_source != "eventwise" and not self.mix_files:
                 if contiguous:
-                    target.append(h5_file[self.y_source][self.y_field][first:last])
+                    target.append(
+                        np.stack(
+                            [
+                                np.asarray(h5_file[self.y_source][field][first:last], dtype=np.float32)
+                                for field in self.y_fields
+                            ],
+                            axis=-1,
+                        )
+                    )
                 else:
-                    target.append(h5_file[self.y_source][self.y_field][first:last][relative_indices])
+                    target.append(
+                        np.stack(
+                            [
+                                np.asarray(h5_file[self.y_source][field][first:last], dtype=np.float32)
+                                for field in self.y_fields
+                            ],
+                            axis=-1,
+                        )
+                    )
         if self.mix_files:
             target = np.full(len(sorted_indices), self.file_labels[file_index], dtype=np.float32)
             return {name: np.concatenate(rows[name]) for name in self.features}, target, sort_order
@@ -273,7 +303,10 @@ class H5EgammaDataset_fully_batched(Dataset):
             raise KeyError(f"Unknown y source: {self.y_source}")
         target_index = event_index if self.y_source == "eventwise" else local_index
         if target is None:
-            target = np.float32(h5_file[self.y_source][self.y_field][target_index])
+            target = np.asarray(
+                [h5_file[self.y_source][field][target_index] for field in self.y_fields],
+                dtype=np.float32,
+            )
         return torch.from_numpy(features), torch.tensor(target)
     
     #Depreciated single row read function. Torch dataloader will call __getitems__ instead of this function.
