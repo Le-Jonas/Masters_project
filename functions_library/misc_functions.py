@@ -66,7 +66,7 @@ def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv"):
 
 
     z_masses = []
-    for i, file in enumerate(h5_files):
+    for j, file in enumerate(h5_files):
         with h5py.File(file, 'r') as f:
             n_egammas = f["eventwise"]["nEgammas"]
             indexes = np.asarray(f["eventwise"]["firstEgammaIndex"], dtype=np.uint64)
@@ -92,7 +92,7 @@ def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv"):
 
             z_mass = compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
             z_masses.extend(z_mass)
-        print(f"Processed file {i}/{len(h5_files)}: Found {len(z_mass)} Z masses", end='\r')
+        print(f"Processed file {j+1}/{len(h5_files)}: Found {len(z_mass)} Z masses", end='\r')
 
     print(f"Saving Z masses to {csv_output_path}")
     np.savetxt(csv_output_path, z_masses)
