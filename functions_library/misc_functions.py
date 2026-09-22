@@ -51,7 +51,7 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
 
     return means.float(), stds.float()
 
-def find_Z_peak(h5_files_path):
+def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv"):
     print(f"Finding Z peak in H5 files at {h5_files_path}")
     def h5_files_from_path(path):
         path = Path(path)
@@ -69,12 +69,20 @@ def find_Z_peak(h5_files_path):
     for file in h5_files:
         with h5py.File(file, 'r') as f:
             n_egammas = f["eventwise"]["nEgammas"]
-            indexes = f["eventwise"]["firstEgammaIndex"]
+            indexes = np.asarray(f["eventwise"]["firstEgammaIndex"], dtype=np.uint64)
+
+            index_s = np.where(indexes[1:] < indexes[:-1])[0]
+            if len(index_s) > 0:
+                print(f"Warning: Indexes are not strictly increasing in file {file}. Found {len(index_s)} decreasing indexes at positions {index_s}.")
+                for i in index_s:
+                    indexes[i + 1:] += (indexes[i] - indexes[i + 1] + n_egammas[i])
 
             mask = np.array([0] * (indexes[-1] + n_egammas[-1]), dtype=bool)
             for i in range(len(n_egammas)):
                 if n_egammas[i] == 2:
                     mask[indexes[i]:indexes[i] + 2] = True
+
+            print(f"Event-wise data: {len(n_egammas)} events, {len(indexes)} indexes, {len(mask)} mask elements")
 
             pt = f["egammas"]["pt"][mask]
             eta = f["egammas"]["eta"][mask]
@@ -83,11 +91,11 @@ def find_Z_peak(h5_files_path):
 
             pt1, eta1, phi1, e1 = pt[::2], eta[::2], phi[::2], e[::2]
             pt2, eta2, phi2, e2 = pt[1::2], eta[1::2], phi[1::2], e[1::2]
-            
+
             z_mass = compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
             z_masses.extend(z_mass)
 
-    np.savetxt("z_masses.csv", z_masses)
+    np.savetxt(csv_output_path, z_masses)
     return 1
 
 def compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2):
