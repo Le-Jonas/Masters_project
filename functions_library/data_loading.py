@@ -124,16 +124,8 @@ def h5_to_npy(h5_file_path, npy_file_path, y_source, y_field, exclude_features=N
     print(f"Converting H5 files in {h5_file_path} to binary NumPy data at {npy_file_path}")
     npy_file_path = Path(npy_file_path)
 
-    def h5_files_from_path(path):
-        path = Path(path)
-        if path.is_file():
-            return [path]
-        if path.is_dir():
-            return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
-        raise FileNotFoundError(f"H5 path does not exist: {path}")
-
-    h5_files = h5_files_from_path(h5_file_path)
-    mix_h5_files = h5_files_from_path(mix_h5_file_path) if mix_h5_file_path is not None else None
+    h5_files = _misc_.h5_files_from_path(h5_file_path)
+    mix_h5_files = _misc_.h5_files_from_path(mix_h5_file_path) if mix_h5_file_path is not None else None
     if not h5_files:
         raise FileNotFoundError(f"No H5 files found in {h5_file_path}")
     if mix_h5_file_path is not None and not mix_h5_files:

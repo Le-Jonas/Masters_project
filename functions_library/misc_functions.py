@@ -51,16 +51,16 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
 
     return means.float(), stds.float()
 
+def h5_files_from_path(path):
+    path = Path(path)
+    if path.is_file():
+        return [path]
+    if path.is_dir():
+        return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
+    raise FileNotFoundError(f"H5 path does not exist: {path}")
+
 def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv", namespace="electron"):
     print(f"Finding Z peak in H5 files at {h5_files_path}")
-    def h5_files_from_path(path):
-        path = Path(path)
-        if path.is_file():
-            return [path]
-        if path.is_dir():
-            return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
-        raise FileNotFoundError(f"H5 path does not exist: {path}")
-
     h5_files = h5_files_from_path(h5_files_path)
     print(f"Found {len(h5_files)} H5 files for Z peak calculation", end='\r')
 
