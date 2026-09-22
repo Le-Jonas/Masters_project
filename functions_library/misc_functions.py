@@ -122,3 +122,11 @@ def compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2):
     z2 = pt2 * np.sinh(eta2)
     z_mass = np.sqrt(np.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
     return z_mass
+
+def get_data_length(h5_files_path):
+    h5_files = h5_files_from_path(h5_files_path)
+    total_length = 0
+    for file in h5_files:
+        with h5py.File(file, 'r') as f:
+            total_length += len(f["eventwise"]["eventNumber"])
+    return total_length
