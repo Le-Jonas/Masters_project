@@ -51,7 +51,7 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
 
     return means.float(), stds.float()
 
-def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv"):
+def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv", namespace="electron"):
     print(f"Finding Z peak in H5 files at {h5_files_path}")
     def h5_files_from_path(path):
         path = Path(path)
@@ -64,12 +64,27 @@ def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv"):
     h5_files = h5_files_from_path(h5_files_path)
     print(f"Found {len(h5_files)} H5 files for Z peak calculation", end='\r')
 
+    if namespace == "electron":
+        name_feature = "egammas"
+        name_n = "nEgammas"
+        name_index = "firstEgammaIndex"
+    elif namespace == "muon":
+        name_feature = "muons"
+        name_n = "nMuons"
+        name_index = "firstMuonIndex"
+    elif namespace == "tau":
+        name_feature = "taus"
+        name_n = "nTaus"
+        name_index = "firstTauIndex"
+    else:
+        raise ValueError(f"Invalid namespace: {namespace}. Must be one of 'electron', 'muon', or 'tau'.")
 
+    
     z_masses = []
     for j, file in enumerate(h5_files):
         with h5py.File(file, 'r') as f:
-            n_egammas = f["eventwise"]["nEgammas"]
-            indexes = np.asarray(f["eventwise"]["firstEgammaIndex"], dtype=np.uint64)
+            n_egammas = f["eventwise"][name_n]
+            indexes = np.asarray(f["eventwise"][name_index], dtype=np.uint64)
 
             index_s = np.where(indexes[1:] < indexes[:-1])[0]
             if len(index_s) > 0:
@@ -82,10 +97,10 @@ def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv"):
                 if n_egammas[i] == 2:
                     mask[indexes[i]:indexes[i] + 2] = True
 
-            pt = f["egammas"]["pt"][mask]
-            eta = f["egammas"]["eta"][mask]
-            phi = f["egammas"]["phi"][mask]
-            e = f["egammas"]["e"][mask]
+            pt = f[name_feature]["pt"][mask]
+            eta = f[name_feature]["eta"][mask]
+            phi = f[name_feature]["phi"][mask]
+            e = f[name_feature]["e"][mask]
 
             pt1, eta1, phi1, e1 = pt[::2], eta[::2], phi[::2], e[::2]
             pt2, eta2, phi2, e2 = pt[1::2], eta[1::2], phi[1::2], e[1::2]
@@ -105,5 +120,5 @@ def compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2):
     x2 = pt2 * np.cos(phi2)
     y2 = pt2 * np.sin(phi2)
     z2 = pt2 * np.sinh(eta2)
-    z_mass = np.sqrt((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2)
+    z_mass = np.sqrt(np.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
     return z_mass
