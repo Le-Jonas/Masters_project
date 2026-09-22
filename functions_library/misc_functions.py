@@ -1,7 +1,7 @@
 import h5py
 import numpy as np
 import torch
-import Path
+from pathlib import Path
 
 def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
     num_batches = sample_size // batch_size
