@@ -1,7 +1,7 @@
 import h5py
 import numpy as np
 from pathlib import Path
-from sqlalchemy import values
+#from sqlalchemy import values
 from torch.utils.data import Dataset 
 import torch
 
@@ -171,7 +171,7 @@ class H5EgammaDataset_fully_batched(Dataset):
     def _selected_field_names(self, dataset_name, field_names):
         excluded = set(self.exclude_fields)
         if dataset_name == self.y_source:
-            excluded.apdate(self.y_fields)
+            excluded.update(self.y_fields)
 
         if self.include_fields is not None:
             return [name for name in field_names if name in self.include_fields and name not in excluded]

@@ -1,5 +1,7 @@
+import h5py
 import numpy as np
 import torch
+import Path
 
 def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
     num_batches = sample_size // batch_size
@@ -48,3 +50,51 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
     )
 
     return means.float(), stds.float()
+
+def find_Z_peak(h5_files_path):
+
+    def h5_files_from_path(path):
+        path = Path(path)
+        if path.is_file():
+            return [path]
+        if path.is_dir():
+            return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
+        raise FileNotFoundError(f"H5 path does not exist: {path}")
+
+    h5_files = h5_files_from_path(h5_files_path)
+
+
+    z_masses = []
+    for file in h5_files:
+        with h5py.File(file, 'r') as f:
+            n_egammas = f["eventwise"]["nEgammas"]
+            indexes = f["eventwise"]["firstEgammaIndex"]
+
+            mask = np.array([0] * (indexes[-1] + n_egammas[-1]), dtype=bool)
+            for i in range(len(n_egammas)):
+                if n_egammas[i] == 2:
+                    mask[indexes[i]:indexes[i] + 2] = True
+
+            pt = file["egammas"]["pt"][mask]
+            eta = file["egammas"]["eta"][mask]
+            phi = file["egammas"]["phi"][mask]
+            e = file["egammas"]["e"][mask]
+
+            pt1, eta1, phi1, e1 = pt[::2], eta[::2], phi[::2], e[::2]
+            pt2, eta2, phi2, e2 = pt[1::2], eta[1::2], phi[1::2], e[1::2]
+
+            z_mass = compute_Z_mass(pt1[i], eta1[i], phi1[i], e1[i], pt2[i], eta2[i], phi2[i], e2[i])
+            z_masses.extend(z_mass)
+
+    np.savetxt("z_masses.csv", z_masses)
+    return 1
+
+def compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2):
+    x1 = pt1 * np.cos(phi1)
+    y1 = pt1 * np.sin(phi1)
+    z1 = pt1 * np.sinh(eta1)
+    x2 = pt2 * np.cos(phi2)
+    y2 = pt2 * np.sin(phi2)
+    z2 = pt2 * np.sinh(eta2)
+    z_mass = np.sqrt((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2)
+    return z_mass
