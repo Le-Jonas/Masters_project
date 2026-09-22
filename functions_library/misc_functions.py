@@ -83,8 +83,8 @@ def find_Z_peak(h5_files_path):
 
             pt1, eta1, phi1, e1 = pt[::2], eta[::2], phi[::2], e[::2]
             pt2, eta2, phi2, e2 = pt[1::2], eta[1::2], phi[1::2], e[1::2]
-
-            z_mass = compute_Z_mass(pt1[i], eta1[i], phi1[i], e1[i], pt2[i], eta2[i], phi2[i], e2[i])
+            
+            z_mass = compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
             z_masses.extend(z_mass)
 
     np.savetxt("z_masses.csv", z_masses)
