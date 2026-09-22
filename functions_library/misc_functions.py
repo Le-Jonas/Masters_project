@@ -126,7 +126,8 @@ def compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2):
 def get_data_length(h5_files_path):
     h5_files = h5_files_from_path(h5_files_path)
     total_length = 0
-    for file in h5_files:
+    for i, file in enumerate(h5_files):
         with h5py.File(file, 'r') as f:
             total_length += len(f["eventwise"]["eventNumber"])
+        print(f"Processed file {i+1}/{len(h5_files)}: Current total length is {total_length}", end='\r')
     return total_length
