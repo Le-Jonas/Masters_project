@@ -52,7 +52,7 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
     return means.float(), stds.float()
 
 def find_Z_peak(h5_files_path):
-
+    print(f"Finding Z peak in H5 files at {h5_files_path}")
     def h5_files_from_path(path):
         path = Path(path)
         if path.is_file():
@@ -62,6 +62,7 @@ def find_Z_peak(h5_files_path):
         raise FileNotFoundError(f"H5 path does not exist: {path}")
 
     h5_files = h5_files_from_path(h5_files_path)
+    print(f"Found {len(h5_files)} H5 files for Z peak calculation", end='\r')
 
 
     z_masses = []
@@ -75,10 +76,10 @@ def find_Z_peak(h5_files_path):
                 if n_egammas[i] == 2:
                     mask[indexes[i]:indexes[i] + 2] = True
 
-            pt = file["egammas"]["pt"][mask]
-            eta = file["egammas"]["eta"][mask]
-            phi = file["egammas"]["phi"][mask]
-            e = file["egammas"]["e"][mask]
+            pt = f["egammas"]["pt"][mask]
+            eta = f["egammas"]["eta"][mask]
+            phi = f["egammas"]["phi"][mask]
+            e = f["egammas"]["e"][mask]
 
             pt1, eta1, phi1, e1 = pt[::2], eta[::2], phi[::2], e[::2]
             pt2, eta2, phi2, e2 = pt[1::2], eta[1::2], phi[1::2], e[1::2]
