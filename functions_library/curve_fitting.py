@@ -10,10 +10,6 @@ def fit_function(data, bins, function, initial_guess, limits=None):
     hist_errors = np.sqrt(counts) / (sample_size * bin_widths)
     fit_mask = counts > 0
 
-    x_min, x_max = bins[0], bins[-1]
-    bin_width = np.min(bin_widths)
-    data_range = x_max - x_min
-
     def chi2(*parameters):
         expected = np.asarray(
             function(bin_centers, *parameters),
