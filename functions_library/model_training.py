@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-def train_model(model, optimizer, loss_function, train_loader, val_loader, num_epochs=10, device='cpu', means=None, stds=None, log_target=False):
+def train_model(model, optimizer, loss_function, train_loader, val_loader, num_epochs=10, device='cpu', means=None, stds=None, log_target=False, binary_target=False):
     model.to(device)
     train_losses = []
     val_losses = []
@@ -21,6 +21,8 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
                 raise ValueError(f"Warning: Non-finite values detected in targets")
             if log_target:
                 targets = torch.log1p(targets)  # Add 1 to avoid log(0)
+            if binary_target is not False:
+                targets = (targets == binary_target).float()  # Convert to binary classification targets
             if means is not None and stds is not None:
                 inputs = (inputs - means) / stds  # Normalize inputs using provided means and stds
             elif means is not None or stds is not None:
@@ -43,7 +45,7 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
 
         epoch_loss = running_loss / len(train_loader.dataset)
 
-        val_loss = validate_model(model, loss_function, val_loader, device, means, stds, log_target=log_target)
+        val_loss = validate_model(model, loss_function, val_loader, device, means, stds, log_target=log_target, binary_target=binary_target)
         val_losses.append(val_loss)
         train_losses.append(epoch_loss)
 
@@ -62,7 +64,7 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
 
 
 
-def validate_model(model, loss_function, val_loader, device='cpu', means=None, stds=None, log_target=False):
+def validate_model(model, loss_function, val_loader, device='cpu', means=None, stds=None, log_target=False, binary_target=False):
         # Validation phase
         model.eval()
         val_loss = 0.0
@@ -73,6 +75,8 @@ def validate_model(model, loss_function, val_loader, device='cpu', means=None, s
                 inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
                 if log_target:
                     targets = torch.log1p(targets)
+                if binary_target is not False:
+                    targets = (targets == binary_target).float()  # Convert to binary classification targets
 
                 if not torch.isfinite(targets).all():
                     raise ValueError(f"Warning: Non-finite values detected in targets")
