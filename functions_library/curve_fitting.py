@@ -9,7 +9,7 @@ def fit_function(data, bins, function, initial_guess, limits=None):
     hist = counts / (sample_size * bin_widths)
     hist_errors = np.sqrt(counts) / (sample_size * bin_widths)
     fit_mask = counts > 0
-
+    
     def chi2(*parameters):
         expected = np.asarray(
             function(bin_centers, *parameters),
@@ -48,15 +48,15 @@ def fit_function(data, bins, function, initial_guess, limits=None):
             f"Minuit failed to find a minimum: {minimizer.fmin}"
         )
 
-    return np.asarray(minimizer.values)
+    return np.asarray(minimizer.values), np.asarray(minimizer.errors), minimizer.fval
 
-def gaussian(x, amplitude, mean, stddev):
-    return amplitude / (np.sqrt(2 * np.pi) * stddev) * np.exp(
+def gaussian(x, mean, stddev):
+    return 1 / (np.sqrt(2 * np.pi) * stddev) * np.exp(
         -((x - mean) ** 2) / (2 * stddev ** 2)
     )
 
 
-def crystal_ball_left(x, amplitude, mean, stddev, alpha, n):
+def crystal_ball_left(x, mean, stddev, alpha, n):
     """Crystal Ball shape with a power-law tail on the low-x side."""
     z = (x - mean) / stddev
     alpha = abs(alpha)
@@ -70,11 +70,48 @@ def crystal_ball_left(x, amplitude, mean, stddev, alpha, n):
     shape[gaussian_mask] = np.exp(-z[gaussian_mask] ** 2 / 2)
     shape[~gaussian_mask] = A * tail_base[~gaussian_mask] ** (-n)
 
-    return amplitude * shape / (np.sqrt(2 * np.pi) * stddev)
+    return shape / (np.sqrt(2 * np.pi) * stddev)
+
+
+def breit_wigner(x, mass, width):
+    """Normalized non-relativistic Breit-Wigner distribution."""
+    half_width = width / 2
+    return 1 / np.pi * half_width / (
+        (x - mass) ** 2 + half_width ** 2
+    )
+
+def exponential_decay(x, amplitude, decay_constant):
+    """Exponential decay function."""
+    return amplitude * np.exp(-decay_constant * x)
+
+def breit_wigner_crystal_ball(
+    x, amplitude, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb
+):
+    """Breit-Wigner convolved with a low-mass Crystal Ball response."""
+    x = np.asarray(x, dtype=float)
+    step = 0.02
+    bw_grid = np.arange(40.0, 151.0 + step, step)
+    response_grid = np.arange(-110.0, 111.0 + step, step)
+
+    bw_values = breit_wigner(bw_grid, mean_bw, width_bw)
+    response_values = crystal_ball_left(
+        response_grid, 0.0, sigma_cb, alpha_cb, n_cb
+    )
+    response_values /= np.trapezoid(response_values, response_grid)
+
+    convolution = fftconvolve(bw_values, response_values, mode="full") * step
+    convolution_grid = (
+        bw_grid[0]
+        + response_grid[0]
+        + np.arange(convolution.size) * step
+    )
+
+    result = np.interp(x, convolution_grid, convolution, left=0.0, right=0.0)
+    return amplitude * result
 
 
 def crystal_ball_double(
-    x, amplitude, mean, stddev, alpha_left, n_left, alpha_right, n_right
+    x, mean, stddev, alpha_left, n_left, alpha_right, n_right
 ):
     """Crystal Ball shape with independent low- and high-x power-law tails."""
     z = (x - mean) / stddev
@@ -99,13 +136,17 @@ def crystal_ball_double(
         B_right + z[right_mask], np.finfo(float).eps
     ) ** (-n_right)
 
-    return amplitude * shape / (np.sqrt(2 * np.pi) * stddev)
+    return shape / (np.sqrt(2 * np.pi) * stddev)
 
-def exponential_decay(x, amplitude, decay_constant):
-    return amplitude * np.exp(-decay_constant * x)
 
-def data_fit_func(x, ratio):
+def data_fit_ratio(x, ratio):
     return (
-        ratio * crystal_ball_double(x, *vals_egam1)
+        ratio * breit_wigner_crystal_ball(x, *vals_egam1)
         + (1 - ratio) * exponential_decay(x, *vals_egam7)
+    )
+
+def true_data_fit(x, amplitude_sig, amplitude_bkg, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
+    return (
+        breit_wigner_crystal_ball(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb)
+        + exponential_decay(x, amplitude_bkg, decay_constant)
     )
