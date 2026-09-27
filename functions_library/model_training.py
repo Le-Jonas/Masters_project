@@ -37,6 +37,7 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
             loss = loss_function(outputs, targets)
             loss.backward()
             optimizer.step()
+            optimizer.zero_grad()
 
             running_loss += loss.item() * inputs.size(0)
             batch_losses[epoch].append(loss.item())
@@ -104,7 +105,6 @@ def predict(model, test_loader, device='cpu', means=None, stds=None, log_target=
     with torch.no_grad():
         for inputs, _ in test_loader:
             inputs = inputs.to(device, non_blocking=True)
-            
             if means is not None and stds is not None:
                 inputs = (inputs - means) / stds  # Normalize inputs using provided means and stds
             elif means is not None or stds is not None:
