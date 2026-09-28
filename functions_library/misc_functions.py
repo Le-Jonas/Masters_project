@@ -20,7 +20,7 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
 
     for start in range(0, len(indices), batch_size):
         batch_indices = indices[start:start + batch_size]
-        sampled_data = dataset.__getitems__(batch_indices)
+        sampled_data = dataset.__getitems__(batch_indices, include_target=False)
 
         features = torch.stack([
             feature_row for feature_row, _ in sampled_data
@@ -59,7 +59,7 @@ def h5_files_from_path(path):
         return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
     raise FileNotFoundError(f"H5 path does not exist: {path}")
 
-def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv", namespace="electron"):
+def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv", namespace="electron", global_mask = False):
     print(f"Finding Z peak in H5 files at {h5_files_path}")
     h5_files = h5_files_from_path(h5_files_path)
     print(f"Found {len(h5_files)} H5 files for Z peak calculation", end='\r')
@@ -81,6 +81,7 @@ def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv", namespace="electr
 
     
     z_masses = []
+    global_mask_index = 0
     for j, file in enumerate(h5_files):
         with h5py.File(file, 'r') as f:
             n_egammas = f["eventwise"][name_n]
@@ -92,10 +93,26 @@ def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv", namespace="electr
                 for i in index_s:
                     indexes[i + 1:] += (indexes[i] - indexes[i + 1] + n_egammas[i])
 
-            mask = np.array([0] * (indexes[-1] + n_egammas[-1]), dtype=bool)
-            for i in range(len(n_egammas)):
-                if n_egammas[i] == 2:
-                    mask[indexes[i]:indexes[i] + 2] = True
+            mask = np.zeros(indexes[-1] + n_egammas[-1], dtype=bool)
+            local_mask = None
+            if global_mask is not False:
+                local_mask = np.asarray(
+                    global_mask[global_mask_index:global_mask_index + len(mask)],
+                    dtype=bool,
+                )
+                if len(local_mask) != len(mask):
+                    raise ValueError(
+                        f"Global mask length {len(global_mask)} does not match "
+                        f"the expected length {len(mask)} for file {file}."
+                    )
+                global_mask_index += len(mask)
+
+            for start, count in zip(indexes, n_egammas):
+                if count != 2:
+                    continue
+                start = int(start)
+                if local_mask is None or local_mask[start] and local_mask[start + 1]:
+                    mask[start:start + 2] = True
 
             pt = f[name_feature]["pt"][mask]
             eta = f[name_feature]["eta"][mask]

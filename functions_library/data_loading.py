@@ -51,7 +51,6 @@ class ShuffledContiguousBatchSampler(Sampler):
             batches.append(np.concatenate((source_0_batch, source_1_batch)).tolist())
             source_0_position += len(source_0_batch)
             source_1_position += len(source_1_batch)
-
         np.random.shuffle(batches)
         yield from batches
 

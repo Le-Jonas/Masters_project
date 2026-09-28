@@ -199,7 +199,7 @@ class H5EgammaDataset_fully_batched(Dataset):
         return np.concatenate(([0], np.cumsum(counts[:-1], dtype=np.int64)))
 
     #Tries to read aligned rows in few contiguous slices if possible, otherwise reads them individually. Returns the rows and the sort order of the indices.
-    def _read_aligned_rows(self, h5_file, indices, file_index=None):
+    def _read_aligned_rows(self, h5_file, indices, file_index=None, include_target=True):
         indices = np.asarray(indices, dtype=np.int64)
         sort_order = np.argsort(indices)
         sorted_indices = indices[sort_order]
@@ -208,11 +208,31 @@ class H5EgammaDataset_fully_batched(Dataset):
         run_ends = np.r_[runs, len(sorted_indices)]
         use_slices = len(run_starts) <= max(1, len(sorted_indices) // 2)
 
+        if not include_target or self.mix_files:
+            if not include_target or not self.y_fields:
+                target = np.empty((len(sorted_indices), 0), dtype=np.float32)
+            elif self.y_source == "eventwise":
+                target = [None] * len(sorted_indices)
+            else:
+                target = np.stack(
+                    [
+                        np.asarray(
+                            h5_file[self.y_source][field][sorted_indices],
+                            dtype=np.float32,
+                        )
+                        for field in self.y_fields
+                    ],
+                    axis=-1,
+                )
+            return (
+                {name: h5_file[name][sorted_indices] for name in self.features},
+                target,
+                sort_order,
+            )
+
         #Reverts to reading individual rows if the number of contiguous slices is too high, otherwise reads them in slices.
         if not use_slices:
-            if self.mix_files:
-                target = np.full(len(sorted_indices), self.file_labels[file_index], dtype=np.float32)
-            elif not self.y_fields:
+            if not include_target or not self.y_fields:
                 target = np.empty((len(sorted_indices), 0), dtype=np.float32)
             elif self.y_source == "eventwise":
                 target = [None] * len(sorted_indices)
@@ -242,7 +262,7 @@ class H5EgammaDataset_fully_batched(Dataset):
                     rows[name].append(h5_file[name][first:last])
                 else:
                     rows[name].append(h5_file[name][first:last][relative_indices])
-            if self.y_fields and self.y_source != "eventwise" and not self.mix_files:
+            if include_target and self.y_fields and self.y_source != "eventwise":
                 if contiguous:
                     target.append(
                         np.stack(
@@ -263,10 +283,7 @@ class H5EgammaDataset_fully_batched(Dataset):
                             axis=-1,
                         )
                     )
-        if self.mix_files:
-            target = np.full(len(sorted_indices), self.file_labels[file_index], dtype=np.float32)
-            return {name: np.concatenate(rows[name]) for name in self.features}, target, sort_order
-        if not self.y_fields:
+        if not include_target or not self.y_fields:
             return {name: np.concatenate(rows[name]) for name in self.features}, np.empty((len(sorted_indices), 0), dtype=np.float32), sort_order
         if self.y_source == "eventwise":
             return {name: np.concatenate(rows[name]) for name in self.features}, [None]*len(sorted_indices), sort_order
@@ -321,11 +338,10 @@ class H5EgammaDataset_fully_batched(Dataset):
     #Depreciated single row read function. Torch dataloader will call __getitems__ instead of this function.
     def __getitem__(self, index):
         file_index, h5_file, local_index = self._get_file_and_row(index)
-        target = self.file_labels[file_index] if self.mix_files else None
-        return self._read_one(h5_file, local_index, target=target)
+        return self._read_one(h5_file, local_index)
 
     #Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs.
-    def __getitems__(self, indices):
+    def __getitems__(self, indices, include_target=True):
         indices = list(indices)
         grouped = {}
         for output_position, index in enumerate(indices):
@@ -349,7 +365,12 @@ class H5EgammaDataset_fully_batched(Dataset):
                 self.eventwise_features_cache[file_index] = {}
             eventwise_features = self.eventwise_features_cache[file_index]
             local_indices = np.array([local_index for _, local_index in positions])
-            rows, target, sort_order = self._read_aligned_rows(h5_file, local_indices, file_index)
+            rows, target, sort_order = self._read_aligned_rows(
+                h5_file,
+                local_indices,
+                file_index,
+                include_target=include_target,
+            )
             sorted_indices = np.sort(local_indices)
             first_indices = self._eventwise_first_indices(eventwise)
 
