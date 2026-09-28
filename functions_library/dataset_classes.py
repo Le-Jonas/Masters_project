@@ -43,7 +43,7 @@ class H5EgammaDataset_fully_batched(Dataset):
         self.file_labels = [0] * len(self.files) + [1] * len(self.mix_files)
         self.files.extend(self.mix_files)
         self.y_source = y_source
-        self.y_fields = [y_field] if isinstance(y_field, str) else list(y_field)
+        self.y_fields = [] if y_field is None else [y_field] if isinstance(y_field, str) else list(y_field)
         self.exclude_fields = set(exclude_fields or [])
         self.include_fields = set(include_fields) if include_fields is not None else None
         self.valid_rows = []
@@ -57,7 +57,7 @@ class H5EgammaDataset_fully_batched(Dataset):
         with h5py.File(example_file, "r") as h5_file:
             feature_names = list(h5_file.keys())
             feature_names.remove("eventwise") if "eventwise" in h5_file else None
-            if self.y_source not in feature_names:
+            if self.y_fields and self.y_source not in feature_names:
                 raise KeyError(f"Unknown y source: {self.y_source}")
             feature_names.remove("truth") if "truth" in h5_file else None
 
@@ -92,8 +92,11 @@ class H5EgammaDataset_fully_batched(Dataset):
                 }
                 if len(set(lengths.values())) != 1:
                     raise ValueError(f"Event data not aligned in {path}")
-                target = self._read_target(h5_file, slice(None))
-                valid_rows = np.flatnonzero(np.isfinite(target).all(axis=-1))
+                if self.y_fields:
+                    target = self._read_target(h5_file, slice(None))
+                    valid_rows = np.flatnonzero(np.isfinite(target).all(axis=-1))
+                else:
+                    valid_rows = np.arange(next(iter(lengths.values())), dtype=np.int64)
                 self.lengths.append(len(valid_rows))
                 self.valid_rows.append(valid_rows)
 
@@ -209,6 +212,8 @@ class H5EgammaDataset_fully_batched(Dataset):
         if not use_slices:
             if self.mix_files:
                 target = np.full(len(sorted_indices), self.file_labels[file_index], dtype=np.float32)
+            elif not self.y_fields:
+                target = np.empty((len(sorted_indices), 0), dtype=np.float32)
             elif self.y_source == "eventwise":
                 target = [None] * len(sorted_indices)
             else:
@@ -237,7 +242,7 @@ class H5EgammaDataset_fully_batched(Dataset):
                     rows[name].append(h5_file[name][first:last])
                 else:
                     rows[name].append(h5_file[name][first:last][relative_indices])
-            if self.y_source != "eventwise" and not self.mix_files:
+            if self.y_fields and self.y_source != "eventwise" and not self.mix_files:
                 if contiguous:
                     target.append(
                         np.stack(
@@ -261,6 +266,8 @@ class H5EgammaDataset_fully_batched(Dataset):
         if self.mix_files:
             target = np.full(len(sorted_indices), self.file_labels[file_index], dtype=np.float32)
             return {name: np.concatenate(rows[name]) for name in self.features}, target, sort_order
+        if not self.y_fields:
+            return {name: np.concatenate(rows[name]) for name in self.features}, np.empty((len(sorted_indices), 0), dtype=np.float32), sort_order
         if self.y_source == "eventwise":
             return {name: np.concatenate(rows[name]) for name in self.features}, [None]*len(sorted_indices), sort_order
         return {name: np.concatenate(rows[name]) for name in self.features}, np.concatenate(target), sort_order
@@ -299,14 +306,16 @@ class H5EgammaDataset_fully_batched(Dataset):
         features = np.concatenate(feature_arrays)
         
                
-        if self.y_source not in h5_file:
+        if self.y_fields and self.y_source not in h5_file:
             raise KeyError(f"Unknown y source: {self.y_source}")
         target_index = event_index if self.y_source == "eventwise" else local_index
-        if target is None:
+        if target is None and self.y_fields:
             target = np.asarray(
                 [h5_file[self.y_source][field][target_index] for field in self.y_fields],
                 dtype=np.float32,
             )
+        elif target is None:
+            target = np.empty(0, dtype=np.float32)
         return torch.from_numpy(features), torch.tensor(target)
     
     #Depreciated single row read function. Torch dataloader will call __getitems__ instead of this function.

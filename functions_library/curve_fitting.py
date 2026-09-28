@@ -1,5 +1,6 @@
 from iminuit import Minuit
 import numpy as np
+from scipy.signal import fftconvolve
 
 def fit_function(data, bins, function, initial_guess, limits=None):
     counts, bin_edges = np.histogram(data, bins=bins)

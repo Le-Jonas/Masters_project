@@ -3,6 +3,12 @@ import numpy as np
 
 def train_model(model, optimizer, loss_function, train_loader, val_loader, num_epochs=10, device='cpu', means=None, stds=None, log_target=False, binary_target=False):
     model.to(device)
+    if isinstance(loss_function, torch.nn.Module):
+        loss_function.to(device)
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(device)
     train_losses = []
     val_losses = []
     batch_losses = {}
@@ -10,6 +16,7 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
     best_model_state = None
     means = means.to(device) if means is not None else None
     stds = stds.to(device) if stds is not None else None
+    binary_value = torch.as_tensor(binary_target, dtype=torch.float32, device=device) if binary_target is not False else None
 
     for epoch in range(num_epochs):
         model.train()
@@ -22,7 +29,7 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
             if log_target:
                 targets = torch.log1p(targets)  # Add 1 to avoid log(0)
             if binary_target is not False:
-                targets = (targets == binary_target).float()  # Convert to binary classification targets
+                targets = torch.eq(targets, binary_value).float()  # Convert to binary classification targets
             if means is not None and stds is not None:
                 inputs = (inputs - means) / stds  # Normalize inputs using provided means and stds
             elif means is not None or stds is not None:
@@ -71,13 +78,14 @@ def validate_model(model, loss_function, val_loader, device='cpu', means=None, s
         val_loss = 0.0
         means = means.to(device) if means is not None else None
         stds = stds.to(device) if stds is not None else None
+        binary_value = torch.as_tensor(binary_target, dtype=torch.float32, device=device) if binary_target is not False else None
         with torch.no_grad():
             for inputs, targets in val_loader:
                 inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
                 if log_target:
                     targets = torch.log1p(targets)
                 if binary_target is not False:
-                    targets = (targets == binary_target).float()  # Convert to binary classification targets
+                    targets = torch.eq(targets, binary_value).float()  # Convert to binary classification targets
 
                 if not torch.isfinite(targets).all():
                     raise ValueError(f"Warning: Non-finite values detected in targets")
