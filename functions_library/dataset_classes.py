@@ -319,7 +319,7 @@ class H5EgammaDataset_fully_batched(Dataset):
             )
         else:
             eventwise_features = eventwise_features[event_index]
-        feature_arrays.append(eventwise_features)
+
         features = np.concatenate(feature_arrays)
         
                
@@ -333,7 +333,7 @@ class H5EgammaDataset_fully_batched(Dataset):
             )
         elif target is None:
             target = np.empty(0, dtype=np.float32)
-        return torch.from_numpy(features), torch.tensor(target)
+        return torch.from_numpy(features), torch.from_numpy(eventwise_features), torch.tensor(target)
     
     #Depreciated single row read function. Torch dataloader will call __getitems__ instead of this function.
     def __getitem__(self, index):

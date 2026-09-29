@@ -16,14 +16,20 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
 
     feature_sum = None
     feature_squared_sum = None
-    count = 0
+
+    feature_sum_event = None
+    feature_squared_sum_event = None
+
 
     for start in range(0, len(indices), batch_size):
         batch_indices = indices[start:start + batch_size]
         sampled_data = dataset.__getitems__(batch_indices, include_target=False)
 
         features = torch.stack([
-            feature_row for feature_row, _ in sampled_data
+            feature_row for feature_row, _, _ in sampled_data
+        ]).double()
+        event_features = torch.stack([
+            event_row for _, event_row, _ in sampled_data
         ]).double()
 
         finite = torch.isfinite(features)
@@ -32,10 +38,24 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
         if feature_sum is None:
             feature_sum = torch.zeros(features.shape[1], dtype=torch.float64)
             feature_squared_sum = torch.zeros(features.shape[1], dtype=torch.float64)
+            count = torch.zeros(features.shape[1], dtype=torch.float64)
 
         feature_sum += safe_features.sum(dim=0)
         feature_squared_sum += (safe_features ** 2).sum(dim=0)
         count += finite.sum(dim=0)
+
+        finite_event = torch.isfinite(event_features)
+        safe_event_features = torch.where(finite_event, event_features, torch.zeros_like(event_features))
+
+
+        if feature_sum_event is None:
+            feature_sum_event = torch.zeros(event_features.shape[1], dtype=torch.float64)
+            feature_squared_sum_event = torch.zeros(event_features.shape[1], dtype=torch.float64)
+            count_event = torch.zeros(event_features.shape[1], dtype=torch.float64)
+
+        feature_sum_event += safe_event_features.sum(dim=0)
+        feature_squared_sum_event += (safe_event_features ** 2).sum(dim=0)
+        count_event += finite_event.sum(dim=0)
 
         print(f"Calculating mean and std for normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
 
@@ -49,7 +69,17 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
         torch.ones_like(stds),
     )
 
-    return means.float(), stds.float()
+    means_event = feature_sum_event / count_event
+    variances_event = feature_squared_sum_event / count_event - means_event ** 2
+    stds_event = torch.sqrt(torch.clamp(variances_event, min=0))
+
+    stds_event = torch.where(
+        torch.isfinite(stds_event) & (stds_event > 0),
+        stds_event,
+        torch.ones_like(stds_event),
+    )
+
+    return (means.float(), means_event.float()), (stds.float(), stds_event.float())
 
 def h5_files_from_path(path):
     path = Path(path)
