@@ -3,20 +3,51 @@ import copy
 import numpy as np
 
 def _move_to_device(values, device):
+    """
+    Move a tuple of values to the specified device.
+
+    Arguments:
+    - values (tuple): A tuple of values to be moved.
+    - device (torch.device): The device to move the values to.
+
+    Returns:
+    - tuple: A tuple of the same structure as `values`, but with all tensors moved to the specified device.
+    """
     return (
         tuple(value.to(device) for value in values)
         if values is not None
         else (None, None)
     )
 
-def _function_on_inputs(function, inputs, args, kwargs=None):
-    if kwargs is None:
-        kwargs = {}
+def _function_on_inputs(function, inputs, args, kwargs={}):
+    """
+    Apply a function to inputs, which can be a single tensor or a tuple of tensors.
+
+    Arguments:
+    - function (callable): The function to apply.
+    - inputs (torch.Tensor or tuple): The input tensor(s) to apply the function to.
+    - args (tuple): The arguments to pass to the function.
+    - kwargs (dict): The keyword arguments to pass to the function.
+
+    Returns:
+    - torch.Tensor or tuple: The result of applying the function to the inputs.
+    """
     if isinstance(inputs, tuple):
         return tuple(function(value, *args, **kwargs) for value in inputs)
     return function(inputs, *args, **kwargs)
 
 def _normalize_inputs(inputs, means, stds):
+    """
+    Normalize inputs using provided means and standard deviations.
+
+    Arguments:
+    - inputs (torch.Tensor or tuple): The input tensor(s) to normalize.
+    - means torch.Tensor: The means to use for normalization.
+    - stds torch.Tensor: The standard deviations to use for normalization.
+
+    Returns:
+    - torch.Tensor or tuple: The normalized input tensor(s).
+    """
     if means is not None and stds is not None:
         return _function_on_inputs(lambda x, m, s: (x - m) / s, inputs, (means, stds))
     elif means is not None or stds is not None:
@@ -25,6 +56,18 @@ def _normalize_inputs(inputs, means, stds):
         return inputs
 
 def _tuple_unpack_to_device(data, device):
+    """
+    Unpack a tuple of data and move each element to the specified device.
+
+    Arguments:
+    - data (tuple): A tuple containing the data to unpack and move.
+    - device (torch.device): The device to move the data to.
+
+    Returns:
+    - inputs (torch.Tensor or tuple): The input tensor(s) moved to the specified device.
+    - eventwise_features (torch.Tensor): The eventwise features moved to the specified device.
+    - targets (torch.Tensor): The target tensor moved to the specified device.
+    """
     eventwise_features, targets = data[-2], data[-1]
     eventwise_features, targets = eventwise_features.to(device, non_blocking=True), targets.to(device, non_blocking=True)
     if len(data) == 3:
@@ -37,6 +80,16 @@ def _tuple_unpack_to_device(data, device):
     return inputs, eventwise_features, targets
 
 def _prepare_binary_targets(targets, binary_value):
+    """
+    Prepare binary targets for training by converting them to a binary format based on the specified binary value.
+
+    Arguments:
+    - targets (torch.Tensor): The target tensor to prepare.
+    - binary_value (float): The value to consider as the positive class (1.0) in the binary target representation.
+
+    Returns:
+    - torch.Tensor: The prepared binary target tensor.
+    """
     targets = torch.eq(targets, binary_value).float()
     if targets.ndim >= 3 and targets.shape[-2] == 2:
         # Pair datasets store targets as (batch, two_particles, target_fields).
@@ -46,6 +99,29 @@ def _prepare_binary_targets(targets, binary_value):
     return targets.reshape(-1)
 
 def train_model(model, optimizer, loss_function, train_loader, val_loader, num_epochs=10, device='cpu', means=None, stds=None, log_target=False, binary_target=False):
+    """
+    Train a PyTorch model using the provided training and validation data loaders, optimizer, and loss function.
+
+    Arguments:
+    - model (torch.nn.Module): The PyTorch model to train.
+    - optimizer (torch.optim.Optimizer): The optimizer to use for training.
+    - loss_function (callable): The loss function to use for training.
+    - train_loader (torch.utils.data.DataLoader): The data loader for the training dataset.
+    - val_loader (torch.utils.data.DataLoader): The data loader for the validation dataset.
+
+    Keywords:
+    - num_epochs (int): The number of epochs to train the model. Default is 10.
+    - device (str or torch.device): The device to use for training (e.g., 'cpu' or 'cuda'). Default is 'cpu'.
+    - means (tuple): A tuple containing the means for input normalization. Default is None.
+    - stds (tuple): A tuple containing the standard deviations for input normalization. Default is None.
+    - log_target (bool): Whether to apply a logarithmic transformation to the target values to smoothen loss function values. Default is False.
+    - binary_target (bool or float): Whether to convert the target values to a binary format. If a float is provided, it will be used as the value to consider as the positive class (1.0). Default is False.
+
+    Returns:
+    - model (torch.nn.Module): The trained PyTorch model.
+    - train_losses (list): A list of training losses for each epoch.
+    - val_losses (list): A list of validation losses for each epoch.
+    """
     model.to(device)
     if isinstance(loss_function, torch.nn.Module):
         loss_function.to(device)
@@ -55,7 +131,6 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
                 state[key] = value.to(device)
     train_losses = []
     val_losses = []
-    batch_losses = {}
     best_val_loss = float('inf')
     best_model_state = None
 
@@ -67,7 +142,6 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
-        batch_losses[epoch] = []
         for batch, data in enumerate(train_loader):
             inputs, eventwise_features, targets = _tuple_unpack_to_device(data, device)
 
@@ -92,7 +166,6 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
             optimizer.step()
 
             running_loss += loss.item() * targets.size(0)
-            batch_losses[epoch].append(loss.item())
 
             print(f'Batch {batch+1}/{len(train_loader)}, Loss: {loss.item():.4f}', end='\r')
 
@@ -113,11 +186,29 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
 
-    return model, train_losses, val_losses, batch_losses
+    return model, train_losses, val_losses
 
 
 
 def validate_model(model, loss_function, val_loader, device='cpu', means=None, stds=None, log_target=False, binary_target=False):
+    """
+    Validate a PyTorch model using the provided validation data loader and loss function.
+
+    Arguments:
+    - model (torch.nn.Module): The PyTorch model to validate.
+    - loss_function (callable): The loss function to use for validation.
+    - val_loader (torch.utils.data.DataLoader): The data loader for the validation dataset.
+
+    Keywords:
+    - device (str or torch.device): The device to use for validation (e.g., 'cpu' or 'cuda'). Default is 'cpu'.
+    - means (tuple): A tuple containing the means for input normalization. Default is None.
+    - stds (tuple): A tuple containing the standard deviations for input normalization. Default is None.
+    - log_target (bool): Whether to apply a logarithmic transformation to the target values to smoothen loss function values. Default is False.
+    - binary_target (bool or float): Whether to convert the target values to a binary format. If a float is provided, it will be used as the value to consider as the positive class (1.0). Default is False.
+
+    Returns:
+    - float: The average validation loss over the entire validation dataset.
+    """
     # Validation phase
     model.eval()
     val_loss = 0.0
@@ -150,6 +241,22 @@ def validate_model(model, loss_function, val_loader, device='cpu', means=None, s
     return val_loss
 
 def predict(model, test_loader, device='cpu', means=None, stds=None, log_target=False):
+    """
+    Predict using a trained PyTorch model on the provided test data loader.
+
+    Arguments:
+    - model (torch.nn.Module): The trained PyTorch model to use for prediction.
+    - test_loader (torch.utils.data.DataLoader): The data loader for the test dataset.
+
+    Keywords:
+    - device (str or torch.device): The device to use for prediction (e.g., 'cpu' or 'cuda'). Default is 'cpu'.
+    - means (tuple): A tuple containing the means for input normalization. Default is None.
+    - stds (tuple): A tuple containing the standard deviations for input normalization. Default is None.
+    - log_target (bool): Whether a logarithmic transformation was applied to the target values during training to smoothen loss function values. Default is False.
+    
+    Returns:
+    - predictions (numpy.ndarray): An array of predicted values.
+    """
     model.eval()
     predictions = []
     means_i, means_e = _move_to_device(means, device)
@@ -164,6 +271,7 @@ def predict(model, test_loader, device='cpu', means=None, stds=None, log_target=
             event_features = torch.nan_to_num(event_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
 
             outputs = model(*inputs, event_features)
+            outputs = outputs.to(dtype=torch.float32)
             if log_target:
                 outputs = torch.expm1(outputs)  # Apply inverse of log1p if log_target is True
             predictions.append(outputs.cpu().numpy())
