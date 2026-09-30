@@ -13,24 +13,32 @@ class ShuffledContiguousBatchSampler(Sampler):
         self.batch_size = batch_size
         self.dataset = dataset
 
+    def _size(self):
+        return len(self.dataset) if self.dataset is not None else self.dataset_size
+
+    def _offsets(self):
+        if self.dataset is not None and hasattr(self.dataset, "pair_offsets"):
+            return self.dataset.pair_offsets
+        return self.dataset.offsets
+
     #This function generates batches of contiguous indices, shuffles the starting indices of the batches, and yields the indices for each batch.
     def __iter__(self):
         if self.dataset is not None and self.dataset.mix_files:
             yield from self._mixed_batches()
             return
 
-        starts = np.arange(0, self.dataset_size, self.batch_size)
+        starts = np.arange(0, self._size(), self.batch_size)
         np.random.shuffle(starts)
 
         for start in starts:
-            stop = min(start + self
-                       .batch_size, self.dataset_size)
+            stop = min(start + self.batch_size, self._size())
             yield list(range(start, stop))
 
     def _mixed_batches(self):
+        offsets = self._offsets()
         source_indices = [
             np.concatenate([
-                np.arange(self.dataset.offsets[file_index], self.dataset.offsets[file_index + 1])
+                np.arange(offsets[file_index], offsets[file_index + 1])
                 for file_index, label in enumerate(self.dataset.file_labels)
                 if label == source_label
             ])
@@ -55,7 +63,25 @@ class ShuffledContiguousBatchSampler(Sampler):
         yield from batches
 
     def __len__(self):
-        return (self.dataset_size + self.batch_size - 1) // self.batch_size
+        if self.dataset is not None and self.dataset.mix_files:
+            offsets = self._offsets()
+            source_counts = [
+                sum(
+                    int(offsets[file_index + 1] - offsets[file_index])
+                    for file_index, label in enumerate(self.dataset.file_labels)
+                    if label == source_label
+                )
+                for source_label in (0, 1)
+            ]
+            source_0_batch_size = int(round(self.batch_size * self.dataset.mixture_ratio))
+            source_0_batch_size = min(max(source_0_batch_size, 1), self.batch_size - 1)
+            source_1_batch_size = self.batch_size - source_0_batch_size
+            return max(
+                (source_counts[0] + source_0_batch_size - 1) // source_0_batch_size,
+                (source_counts[1] + source_1_batch_size - 1) // source_1_batch_size,
+            )
+        size = self._size()
+        return (size + self.batch_size - 1) // self.batch_size
 
 def h5_to_csv(h5_file_path, csv_file_path, y_source, y_field, exclude_features=None, exclude_fields=None, include_features=None, include_fields=None, batch_size=256, sample_size=100_000, mix_h5_file_path=None, mixture_ratio=None, mixture_seed=0):
     print(f"Converting H5 files in {h5_file_path} to CSV at {csv_file_path}")

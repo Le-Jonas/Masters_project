@@ -4,8 +4,9 @@ from pathlib import Path
 #from sqlalchemy import values
 from torch.utils.data import Dataset 
 import torch
+import time
 
-class H5EgammaDataset_fully_batched(Dataset):
+class H5EgammaDataset(Dataset):
     #Initialization of the dataset class. Needs input for the dataset file paths, the source of the target variable, 
     #the field name of the target variable, and any fields to exclude from the features.
     def __init__(
@@ -110,12 +111,28 @@ class H5EgammaDataset_fully_batched(Dataset):
         state["handles"] = {}
         state["eventwise_cache"] = {}
         state["eventwise_features_cache"] = {}
+        state["eventwise_first_indices_cache"] = {}
+        state["eventwise_metadata_cache"] = {}
         return state
 
     def _get_handle(self, file_index):
+        if not 0 <= file_index < len(self.files):
+            raise IndexError(
+                f"Dataset file index {file_index} is out of range for "
+                f"{len(self.files)} files; offsets={self.offsets.tolist()}"
+            )
         if file_index not in self.handles:
             self.handles[file_index] = h5py.File(self.files[file_index], "r")
         return self.handles[file_index]
+
+    def _global_file_index(self, index, offsets=None):
+        offsets = self.offsets if offsets is None else offsets
+        index = int(index)
+        if index < 0 or index >= int(offsets[-1]):
+            raise IndexError(
+                f"Dataset index {index} is out of range for length {int(offsets[-1])}"
+            )
+        return int(np.searchsorted(offsets, index, side="right") - 1)
 
     def _apply_mixture(self, mixture_ratio, mixture_seed):
         source_rows = [
@@ -166,7 +183,7 @@ class H5EgammaDataset_fully_batched(Dataset):
 
     #Finds the file and row index corresponding to a given global index across all files.
     def _get_file_and_row(self, index):
-        file_index = np.searchsorted(self.offsets, index, side="right") - 1
+        file_index = self._global_file_index(index)
         filtered_index = int(index - self.offsets[file_index])
         local_index = int(self.valid_rows[file_index][filtered_index])
         return file_index, self._get_handle(file_index), local_index
@@ -193,16 +210,153 @@ class H5EgammaDataset_fully_batched(Dataset):
         values = [np.asarray(rows[name], dtype=np.float32).reshape(-1) for name in names]
         return np.concatenate(values) if values else np.empty(0, dtype=np.float32)
 
-    def _eventwise_first_indices(self, eventwise):
-        count_field = eventwise.dtype.names[0]
-        counts = np.asarray(eventwise[count_field], dtype=np.int64)
+    def _eventwise_feature_matrix(self, eventwise):
+        names = self._selected_field_names("eventwise", eventwise.dtype.names)
+        if not names:
+            return np.empty((len(eventwise), 0), dtype=np.float32)
+        return np.concatenate(
+            [
+                np.asarray(eventwise[name], dtype=np.float32).reshape(len(eventwise), -1)
+                for name in names
+            ],
+            axis=1,
+        )
+
+    def _eventwise_first_indices(self, eventwise, row_count=None):
+        counts = self._eventwise_counts(eventwise)
+        if "firstEgammaIndex" in eventwise.dtype.names:
+            field = "firstEgammaIndex"
+        elif "firstMuonIndex" in eventwise.dtype.names:
+            field = "firstMuonIndex"
+        elif "firstTauIndex" in eventwise.dtype.names:
+            field = "firstTauIndex"
+        else:
+            field = None
+
+        if field is not None:
+            starts = np.asarray(eventwise[field], dtype=np.int64)
+            ends = starts + counts
+            if row_count is None:
+                return starts
+            if starts.size and starts[0] != 0:
+                shifted_starts = starts - starts[0]
+                shifted_ends = shifted_starts + counts
+                if shifted_ends[-1] == row_count and np.all(
+                    shifted_starts[1:] == shifted_ends[:-1]
+                ):
+                    return shifted_starts
+            elif starts.size and ends[-1] == row_count and np.all(
+                starts[1:] == ends[:-1]
+            ):
+                return starts
+
+        # Some files store absolute or otherwise non-local first indices. The
+        # feature datasets are packed locally, so cumulative counts are the
+        # correct row mapping when explicit indices fail validation.
         return np.concatenate(([0], np.cumsum(counts[:-1], dtype=np.int64)))
 
+    def _get_eventwise_first_indices(self, file_index, h5_file, eventwise):
+        if not hasattr(self, "eventwise_first_indices_cache"):
+            self.eventwise_first_indices_cache = {}
+        if file_index not in self.eventwise_first_indices_cache:
+            row_count = len(h5_file[self.features[0]])
+            self.eventwise_first_indices_cache[file_index] = (
+                self._eventwise_first_indices(eventwise, row_count)
+            )
+        return self.eventwise_first_indices_cache[file_index]
+
+    def _get_eventwise_metadata(self, file_index, h5_file):
+        if not hasattr(self, "eventwise_metadata_cache"):
+            self.eventwise_metadata_cache = {}
+        if file_index not in self.eventwise_metadata_cache:
+            eventwise_dataset = h5_file["eventwise"]
+            count_field = (
+                "nEgammas" if "nEgammas" in eventwise_dataset.dtype.names
+                else "nMuons" if "nMuons" in eventwise_dataset.dtype.names
+                else "nTaus" if "nTaus" in eventwise_dataset.dtype.names
+                else eventwise_dataset.dtype.names[0]
+            )
+            counts = np.asarray(eventwise_dataset[count_field][:], dtype=np.int64)
+            if "firstEgammaIndex" in eventwise_dataset.dtype.names:
+                starts = np.asarray(eventwise_dataset["firstEgammaIndex"][:], dtype=np.int64)
+            elif "firstMuonIndex" in eventwise_dataset.dtype.names:
+                starts = np.asarray(eventwise_dataset["firstMuonIndex"][:], dtype=np.int64)
+            elif "firstTauIndex" in eventwise_dataset.dtype.names:
+                starts = np.asarray(eventwise_dataset["firstTauIndex"][:], dtype=np.int64)
+            else:
+                starts = np.concatenate(([0], np.cumsum(counts[:-1], dtype=np.int64)))
+            row_count = len(h5_file[self.features[0]])
+            if starts.size and starts[0] != 0:
+                shifted = starts - starts[0]
+                if shifted[-1] + counts[-1] == row_count and np.all(
+                    shifted[1:] == shifted[:-1] + counts[:-1]
+                ):
+                    starts = shifted
+            if not starts.size or starts[0] != 0 or starts[-1] + counts[-1] != row_count:
+                starts = np.concatenate(([0], np.cumsum(counts[:-1], dtype=np.int64)))
+            self.eventwise_metadata_cache[file_index] = (
+                starts,
+                counts,
+                count_field,
+            )
+        return self.eventwise_metadata_cache[file_index]
+
+    def _read_eventwise_rows(self, h5_file, event_indices):
+        event_indices = np.asarray(event_indices, dtype=np.int64)
+        eventwise_dataset = h5_file["eventwise"]
+        return eventwise_dataset[event_indices]
+
+    def _eventwise_counts(self, eventwise):
+        count_field = (
+            "nEgammas" if "nEgammas" in eventwise.dtype.names
+            else "nMuons" if "nMuons" in eventwise.dtype.names
+            else "nTaus" if "nTaus" in eventwise.dtype.names
+            else eventwise.dtype.names[0]
+        )
+        return np.asarray(eventwise[count_field], dtype=np.int64)
+
     #Tries to read aligned rows in few contiguous slices if possible, otherwise reads them individually. Returns the rows and the sort order of the indices.
-    def _read_aligned_rows(self, h5_file, indices, file_index=None, include_target=True):
+    def _read_aligned_rows(
+        self,
+        h5_file,
+        indices,
+        file_index=None,
+        include_target=True,
+        prefer_contiguous_span=False,
+    ):
         indices = np.asarray(indices, dtype=np.int64)
         sort_order = np.argsort(indices)
         sorted_indices = indices[sort_order]
+
+        if prefer_contiguous_span and len(sorted_indices):
+            first = int(sorted_indices[0])
+            last = int(sorted_indices[-1]) + 1
+            relative_indices = sorted_indices - first
+            span_size = last - first
+            if span_size <= max(len(sorted_indices) * 4, len(sorted_indices) + 32):
+                rows = {
+                    name: h5_file[name][first:last][relative_indices]
+                    for name in self.features
+                }
+                if not include_target or not self.y_fields:
+                    target = np.empty(
+                        (len(sorted_indices), 0), dtype=np.float32
+                    )
+                elif self.y_source == "eventwise":
+                    target = [None] * len(sorted_indices)
+                else:
+                    target = np.stack(
+                        [
+                            np.asarray(
+                                h5_file[self.y_source][field][sorted_indices],
+                                dtype=np.float32,
+                            )
+                            for field in self.y_fields
+                        ],
+                        axis=-1,
+                    )
+                return rows, target, sort_order
+
         runs = np.flatnonzero(np.diff(sorted_indices) > 1) + 1
         run_starts = np.r_[0, runs]
         run_ends = np.r_[runs, len(sorted_indices)]
@@ -296,10 +450,15 @@ class H5EgammaDataset_fully_batched(Dataset):
             eventwise = h5_file["eventwise"][:]
         eventwise_names = eventwise.dtype.names
         if first_indices is None:
-            first_indices = self._eventwise_first_indices(eventwise)
+            first_indices = self._eventwise_first_indices(
+                eventwise, len(h5_file[self.features[0]])
+            )
 
         event_index = int(np.searchsorted(first_indices, local_index, side="right") - 1)
-        if event_index < 0 or local_index >= first_indices[event_index] + eventwise[eventwise_names[0]][event_index]:
+        if event_index < 0:
+            raise IndexError(f"Egamma row {local_index} is not covered by eventwise")
+        event_end = first_indices[event_index] + self._eventwise_counts(eventwise)[event_index]
+        if local_index >= event_end:
             raise IndexError(f"Egamma row {local_index} is not covered by eventwise")
 
         if rows is None:
@@ -345,7 +504,7 @@ class H5EgammaDataset_fully_batched(Dataset):
         indices = list(indices)
         grouped = {}
         for output_position, index in enumerate(indices):
-            file_index = int(np.searchsorted(self.offsets, index, side="right") - 1)
+            file_index = self._global_file_index(index)
             filtered_index = int(index - self.offsets[file_index])
             local_index = int(self.valid_rows[file_index][filtered_index])
             grouped.setdefault(file_index, []).append((output_position, local_index))
@@ -358,12 +517,22 @@ class H5EgammaDataset_fully_batched(Dataset):
         batch = [None] * len(indices)
         for file_index, positions in grouped.items():
             h5_file = self._get_handle(file_index)
-            if file_index not in self.eventwise_cache:
-                self.eventwise_cache[file_index] = h5_file["eventwise"][:]
-            eventwise = self.eventwise_cache[file_index]
-            if file_index not in self.eventwise_features_cache:
-                self.eventwise_features_cache[file_index] = {}
-            eventwise_features = self.eventwise_features_cache[file_index]
+            first_indices, counts, count_field = self._get_eventwise_metadata(
+                file_index, h5_file
+            )
+            eventwise_dtype = [(count_field, "i8")]
+            start_field = (
+                "firstEgammaIndex" if "firstEgammaIndex" in h5_file["eventwise"].dtype.names
+                else "firstMuonIndex" if "firstMuonIndex" in h5_file["eventwise"].dtype.names
+                else "firstTauIndex" if "firstTauIndex" in h5_file["eventwise"].dtype.names
+                else None
+            )
+            if start_field is not None:
+                eventwise_dtype.append((start_field, "i8"))
+            eventwise = np.empty(len(counts), dtype=eventwise_dtype)
+            eventwise[count_field] = counts
+            if start_field is not None:
+                eventwise[start_field] = first_indices
             local_indices = np.array([local_index for _, local_index in positions])
             rows, target, sort_order = self._read_aligned_rows(
                 h5_file,
@@ -372,7 +541,15 @@ class H5EgammaDataset_fully_batched(Dataset):
                 include_target=include_target,
             )
             sorted_indices = np.sort(local_indices)
-            first_indices = self._eventwise_first_indices(eventwise)
+            event_indices = np.searchsorted(first_indices, sorted_indices, side="right") - 1
+            unique_event_indices = np.unique(event_indices)
+            eventwise_rows = self._read_eventwise_rows(h5_file, unique_event_indices)
+            eventwise_features = {
+                int(event_index): self._structured_to_array(
+                    eventwise_rows[position], "eventwise"
+                )
+                for position, event_index in enumerate(unique_event_indices)
+            }
 
             for sorted_position, original_position in enumerate(np.argsort(sort_order)):
                 batch[positions[original_position][0]] = self._read_one(
@@ -411,3 +588,222 @@ class npyDataset(Dataset):
         features = torch.from_numpy(self.features[indices])
         targets = torch.from_numpy(self.targets[indices])
         return list(zip(features, targets))
+
+class ZPairDataset(H5EgammaDataset):
+    """Dataset containing every unordered lepton pair from each event.
+
+    A returned item is ``(lepton1, lepton2, eventwise, target)``. Events
+    with fewer than two selected leptons are omitted.
+    """
+
+    def __init__(self, files, **kwargs):
+        super().__init__(files=files, **kwargs)
+
+        self.pair_file_indices = []
+        self.pair_rows = []
+        self.pair_event_indices = []
+        self.pair_offsets = [0]
+
+        for file_index, valid_rows in enumerate(self.valid_rows):
+            with h5py.File(self.files[file_index], "r") as h5_file:
+                eventwise = h5_file["eventwise"][:]
+                row_count = len(h5_file[self.features[0]])
+            event_starts = self._eventwise_first_indices(
+                eventwise, row_count
+            )
+            event_ends = event_starts + self._eventwise_counts(eventwise)
+
+            # valid_rows is sorted, so locate each event's selected rows with
+            # two binary searches instead of scanning the full array per event.
+            event_row_starts = np.searchsorted(valid_rows, event_starts, side="left")
+            event_row_ends = np.searchsorted(valid_rows, event_ends, side="left")
+            selected_counts = event_row_ends - event_row_starts
+            pair_counts = selected_counts * (selected_counts - 1) // 2
+            pair_array = np.empty((int(pair_counts.sum()), 2), dtype=np.int64)
+            event_array = np.empty(len(pair_array), dtype=np.int64)
+
+            pair_start = 0
+            for event_index, (row_start, row_end, pair_count) in enumerate(
+                zip(event_row_starts, event_row_ends, pair_counts)
+            ):
+                if pair_count == 0:
+                    continue
+                event_rows = valid_rows[row_start:row_end]
+                first_indices, second_indices = np.triu_indices(len(event_rows), k=1)
+                pair_end = pair_start + int(pair_count)
+                pair_array[pair_start:pair_end, 0] = event_rows[first_indices]
+                pair_array[pair_start:pair_end, 1] = event_rows[second_indices]
+                event_array[pair_start:pair_end] = event_index
+                pair_start = pair_end
+
+            self.pair_file_indices.append(
+                np.full(len(pair_array), file_index, dtype=np.int64)
+            )
+            self.pair_rows.append(pair_array)
+            self.pair_event_indices.append(event_array)
+            self.pair_offsets.append(self.pair_offsets[-1] + len(pair_array))
+
+        self.pair_offsets = np.asarray(self.pair_offsets, dtype=np.int64)
+        self.fields = (
+            [f"lepton1_{field}" for field in self.fields if not field.startswith("eventwise_")]
+            + [f"lepton2_{field}" for field in self.fields if not field.startswith("eventwise_")]
+            + [field for field in self.fields if field.startswith("eventwise_")]
+        )
+
+    def __len__(self):
+        return int(self.pair_offsets[-1])
+
+    def _get_pair(self, index):
+        pair_index = int(index)
+        if pair_index < 0 or pair_index >= len(self):
+            raise IndexError(
+                f"Pair index {pair_index} is out of range for length {len(self)}"
+            )
+        file_index = int(np.searchsorted(self.pair_offsets, pair_index, side="right") - 1)
+        local_pair_index = pair_index - int(self.pair_offsets[file_index])
+        first_row, second_row = self.pair_rows[file_index][local_pair_index]
+        event_index = self.pair_event_indices[file_index][local_pair_index]
+        return file_index, int(first_row), int(second_row), int(event_index)
+
+    def __getitem__(self, index):
+        file_index, first_row, second_row, event_index = self._get_pair(index)
+        h5_file = self._get_handle(file_index)
+        if not hasattr(self, "eventwise_cache"):
+            self.eventwise_cache = {}
+            self.eventwise_features_cache = {}
+        if file_index not in self.eventwise_cache:
+            self.eventwise_cache[file_index] = h5_file["eventwise"][:]
+            self.eventwise_features_cache[file_index] = {}
+        eventwise = self.eventwise_cache[file_index]
+        first_indices = self._get_eventwise_first_indices(
+            file_index, h5_file, eventwise
+        )
+        eventwise_features = self.eventwise_features_cache[file_index]
+        first = self._read_one(
+            h5_file, first_row, eventwise, first_indices,
+            eventwise_features=eventwise_features,
+        )
+        second = self._read_one(
+            h5_file, second_row, eventwise, first_indices,
+            eventwise_features=eventwise_features,
+        )
+        return (
+            first[0],
+            second[0],
+            first[1],
+            torch.stack((first[2], second[2])),
+        )
+
+    def __getitems__(self, indices):
+        indices = list(indices)
+        global_indices = np.asarray(indices, dtype=np.int64)
+        file_indices = np.searchsorted(
+            self.pair_offsets, global_indices, side="right"
+        ) - 1
+        local_pair_indices = global_indices - self.pair_offsets[file_indices]
+        grouped = {
+            int(file_index): np.flatnonzero(file_indices == file_index)
+            for file_index in np.unique(file_indices)
+        }
+
+        if not hasattr(self, "eventwise_cache"):
+            self.eventwise_cache = {}
+        if not hasattr(self, "eventwise_features_cache"):
+            self.eventwise_features_cache = {}
+
+
+        batch = [None] * len(indices)
+        for file_index, output_positions in grouped.items():
+            h5_file = self._get_handle(file_index)
+            if file_index not in self.eventwise_cache:
+                self.eventwise_cache[file_index] = h5_file["eventwise"][:]
+            eventwise = self.eventwise_cache[file_index]
+            if file_index not in self.eventwise_features_cache:
+                self.eventwise_features_cache[file_index] = None
+            eventwise_features = self.eventwise_features_cache[file_index]
+            first_indices = self._get_eventwise_first_indices(
+                file_index, h5_file, eventwise
+            )
+
+            pair_rows = self.pair_rows[file_index][local_pair_indices[output_positions]]
+            pair_event_indices = self.pair_event_indices[file_index][
+                local_pair_indices[output_positions]
+            ]
+            unique_rows = np.unique(pair_rows)
+            rows, targets, _ = self._read_aligned_rows(
+                h5_file,
+                unique_rows,
+                file_index,
+                include_target=True,
+                prefer_contiguous_span=True,
+            )
+
+            # Flatten all selected structured fields in one vectorized pass.
+            # This avoids calling _read_one once per unique electron row.
+            electron_features = np.concatenate(
+                [
+                    np.concatenate(
+                        [
+                            np.asarray(rows[name][field], dtype=np.float32).reshape(
+                                len(unique_rows), -1
+                            )
+                            for field in self._selected_field_names(
+                                name, rows[name].dtype.names
+                            )
+                        ],
+                        axis=1,
+                    )
+                    for name in self.features
+                ],
+                axis=1,
+            )
+            row_event_indices = np.searchsorted(
+                first_indices, unique_rows, side="right"
+            ) - 1
+
+            if eventwise_features is None:
+                eventwise_rows = eventwise
+                eventwise_names = self._selected_field_names(
+                    "eventwise", eventwise_rows.dtype.names
+                )
+                eventwise_features = np.concatenate(
+                    [
+                        np.asarray(eventwise_rows[field], dtype=np.float32).reshape(
+                            len(eventwise_rows), -1
+                        )
+                        for field in eventwise_names
+                    ],
+                    axis=1,
+                )
+                self.eventwise_features_cache[file_index] = eventwise_features
+
+            if self.y_source == "eventwise" and self.y_fields:
+                targets = np.stack(
+                    [
+                        np.asarray(
+                            eventwise[field][row_event_indices], dtype=np.float32
+                        )
+                        for field in self.y_fields
+                    ],
+                    axis=-1,
+                )
+
+            first_positions = np.searchsorted(unique_rows, pair_rows[:, 0])
+            second_positions = np.searchsorted(unique_rows, pair_rows[:, 1])
+            first_features = torch.from_numpy(electron_features[first_positions])
+            second_features = torch.from_numpy(electron_features[second_positions])
+            pair_eventwise = torch.from_numpy(eventwise_features[pair_event_indices])
+            pair_targets = torch.from_numpy(
+                np.stack((targets[first_positions], targets[second_positions]), axis=1)
+            )
+
+            for batch_position, output_position in enumerate(output_positions):
+                batch[output_position] = (
+                    first_features[batch_position],
+                    second_features[batch_position],
+                    pair_eventwise[batch_position],
+                    pair_targets[batch_position],
+                )
+
+        return batch
+        
