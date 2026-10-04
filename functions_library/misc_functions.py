@@ -3,6 +3,8 @@ import numpy as np
 import torch
 from pathlib import Path
 
+from .dataset_classes import H5EgammaDataset
+
 def _h5_files_from_path(path):
     """
     Given a path, return a list of H5 files. If the path is a file, return a list containing that file.
@@ -40,6 +42,32 @@ def _compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2):
     z2 = pt2 * np.sinh(eta2)
     z_mass = np.sqrt(np.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
     return z_mass
+
+def _selected_rows_for_files(h5_files, mix_files, mixture_ratio, mixture_seed):
+    """Return the row selections used by H5EgammaDataset for each file."""
+    if mix_files is None:
+        dataset_mix_files = None
+    elif isinstance(mix_files, (str, Path)):
+        mix_path = Path(mix_files)
+        dataset_mix_files = (
+            sorted(
+                file for file in mix_path.iterdir()
+                if file.is_file() and file.suffix == ".h5"
+            )
+            if mix_path.is_dir()
+            else [mix_path]
+        )
+    else:
+        dataset_mix_files = list(mix_files)
+
+    dataset = H5EgammaDataset(
+        files=h5_files,
+        mix_files=dataset_mix_files,
+        mixture_ratio=mixture_ratio,
+        mixture_seed=mixture_seed,
+        y_field=None,
+    )
+    return dataset.files, dataset.valid_rows
 
 def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
     """
@@ -135,7 +163,15 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
 
 
 
-def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv", namespace="electron", global_mask = False):
+def find_Z_peak(
+    h5_files_path,
+    csv_output_path="z_masses.csv",
+    namespace="electron",
+    global_mask=False,
+    mix_files=None,
+    mixture_ratio=None,
+    mixture_seed=0,
+):
     """
     Given a path to H5 files, compute the invariant mass of Z bosons formed by pairs of particles (electrons, muons, or taus) and save the results to a CSV file. Optionally, apply a global mask to filter the particles.
 
@@ -146,12 +182,18 @@ def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv", namespace="electr
     - csv_output_path (str): The path to the output CSV file where the Z masses will be saved. Default is "z_masses.csv".
     - namespace (str): The type of particles to consider for Z boson formation. Must be one of "electron", "muon", or "tau". Default is "electron".
     - global_mask (array-like or bool): An optional mask to filter the particles. If False, no mask is applied. If provided, it should be a boolean array of the same length as the total number of particles across all H5 files.
+    - mix_files (str, Path, or list): Optional mixed H5 file(s), following H5EgammaDataset semantics.
+    - mixture_ratio (float): Fraction of rows selected from the main files when mixing.
+    - mixture_seed (int): Seed used for deterministic mixture row selection.
 
     Returns:
     - int: Returns 1 upon successful completion.
     """
     print(f"Finding Z peak in H5 files at {h5_files_path}")
     h5_files = _h5_files_from_path(h5_files_path)
+    h5_files, selected_rows = _selected_rows_for_files(
+        h5_files, mix_files, mixture_ratio, mixture_seed
+    )
     print(f"Found {len(h5_files)} H5 files for Z peak calculation", end='\r')
 
     if namespace == "electron":
@@ -183,44 +225,61 @@ def find_Z_peak(h5_files_path, csv_output_path="z_masses.csv", namespace="electr
                 for i in index_s:
                     indexes[i + 1:] += (indexes[i] - indexes[i + 1] + n_egammas[i])
 
-            mask = np.zeros(indexes[-1] + n_egammas[-1], dtype=bool)
-            local_mask = None
+            file_rows = selected_rows[j]
             if global_mask is not False:
                 local_mask = np.asarray(
-                    global_mask[global_mask_index:global_mask_index + len(mask)],
+                    global_mask[global_mask_index:global_mask_index + len(file_rows)],
                     dtype=bool,
                 )
-                if len(local_mask) != len(mask):
+                if len(local_mask) != len(file_rows):
                     raise ValueError(
                         f"Global mask length {len(global_mask)} does not match "
-                        f"the expected length {len(mask)} for file {file}."
+                        f"the expected selected-row length for file {file}."
                     )
-                global_mask_index += len(mask)
+                global_mask_index += len(file_rows)
+            else:
+                local_mask = None
 
+            z_count = 0
             for start, count in zip(indexes, n_egammas):
-                if count != 2:
+                event_rows = file_rows[
+                    (file_rows >= start) & (file_rows < start + count)
+                ]
+                if count != 2 or len(event_rows) != 2:
                     continue
-                start = int(start)
-                if local_mask is None or local_mask[start] and local_mask[start + 1]:
-                    mask[start:start + 2] = True
+                selected_positions = np.searchsorted(file_rows, event_rows)
+                if local_mask is not None and not local_mask[selected_positions].all():
+                    continue
+                values = [
+                    f[name_feature][field][event_rows]
+                    for field in ("pt", "eta", "phi", "e")
+                ]
+                z_masses.append(_compute_Z_mass(
+                    values[0][0], values[1][0], values[2][0], values[3][0],
+                    values[0][1], values[1][1], values[2][1], values[3][1],
+                ))
+                z_count += 1
+        print(f"Processed file {j+1}/{len(h5_files)}: Found {z_count} Z masses", end='\r')
 
-            pt = f[name_feature]["pt"][mask]
-            eta = f[name_feature]["eta"][mask]
-            phi = f[name_feature]["phi"][mask]
-            e = f[name_feature]["e"][mask]
-
-            pt1, eta1, phi1, e1 = pt[::2], eta[::2], phi[::2], e[::2]
-            pt2, eta2, phi2, e2 = pt[1::2], eta[1::2], phi[1::2], e[1::2]
-
-            z_mass = _compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
-            z_masses.extend(z_mass)
-        print(f"Processed file {j+1}/{len(h5_files)}: Found {len(z_mass)} Z masses", end='\r')
+    if global_mask is not False and global_mask_index != len(global_mask):
+        raise ValueError(
+            f"Global mask length {len(global_mask)} does not match "
+            f"the expected selected-row length {global_mask_index}."
+        )
 
     print(f"Saving Z masses to {csv_output_path}")
     np.savetxt(csv_output_path, z_masses)
     return 1
 
-def find_Z_peak_pairs(h5_files_path, csv_output_path="z_masses.csv", namespace="electron", global_mask = False):
+def find_Z_peak_pairs(
+    h5_files_path,
+    csv_output_path="z_masses.csv",
+    namespace="electron",
+    global_mask=False,
+    mix_files=None,
+    mixture_ratio=None,
+    mixture_seed=0,
+):
     """
     Given a path to H5 files, compute the invariant mass of Z bosons formed by pairs of particles (electrons, muons, or taus) and save the results to a CSV file. Optionally, apply a global mask to filter the particles.
 
@@ -231,12 +290,18 @@ def find_Z_peak_pairs(h5_files_path, csv_output_path="z_masses.csv", namespace="
     - csv_output_path (str): The path to the output CSV file where the Z masses will be saved. Default is "z_masses.csv".
     - namespace (str): The type of particles to consider for Z boson formation. Must be one of "electron", "muon", or "tau". Default is "electron".
     - global_mask (array-like or bool): An optional mask to filter the pairs. If False, no mask is applied. If provided, it should be a boolean array of the same length as the total number of particle pairs across all H5 files.
+    - mix_files (str, Path, or list): Optional mixed H5 file(s), following ZPairDataset semantics.
+    - mixture_ratio (float): Fraction of rows selected from the main files when mixing.
+    - mixture_seed (int): Seed used for deterministic mixture row selection.
     
     Returns:
     - int: Returns 1 upon successful completion.
     """
     print(f"Finding Z peak in H5 files at {h5_files_path}")
     h5_files = _h5_files_from_path(h5_files_path)
+    h5_files, selected_rows = _selected_rows_for_files(
+        h5_files, mix_files, mixture_ratio, mixture_seed
+    )
     print(f"Found {len(h5_files)} H5 files for Z peak calculation", end='\r')
 
     if namespace == "electron":
@@ -256,8 +321,65 @@ def find_Z_peak_pairs(h5_files_path, csv_output_path="z_masses.csv", namespace="
 
     
     z_masses = []
-    global_mask_index = 0
-    ###TEMP WILL BE CONTINUED ONCE MORALE IMPROVES!
+    n_pairs = 0
+
+    for j, file in enumerate(h5_files):
+        with h5py.File(file, 'r') as f:
+            n_egammas = f["eventwise"][name_n]
+            indexes = np.asarray(f["eventwise"][name_index], dtype=np.uint64)
+
+            index_s = np.where(indexes[1:] < indexes[:-1])[0]
+            if len(index_s) > 0:
+                print(f"Warning: Indexes are not strictly increasing in file {file}. Found {len(index_s)} decreasing indexes at positions {index_s}.")
+                for i in index_s:
+                    indexes[i + 1:] += (indexes[i] - indexes[i + 1] + n_egammas[i])
+
+            pt = f[name_feature]["pt"]
+            eta = f[name_feature]["eta"]
+            phi = f[name_feature]["phi"]
+            e = f[name_feature]["e"]
+
+            file_rows = selected_rows[j]
+            z_count = 0
+            for n, start in zip(n_egammas, indexes):
+                event_rows = file_rows[
+                    (file_rows >= start) & (file_rows < start + n)
+                ]
+                if len(event_rows) < 2:
+                    continue
+                for i in range(len(event_rows)):
+                    for j in range(i + 1, len(event_rows)):
+                        if global_mask is not False:
+                            if n_pairs >= len(global_mask):
+                                raise ValueError(
+                                    "Global mask is shorter than the expected pair sequence."
+                                )
+                            if not bool(global_mask[n_pairs]):
+                                n_pairs += 1
+                                continue
+                        first_row, second_row = event_rows[i], event_rows[j]
+                        pt1, eta1, phi1, e1 = (
+                            f[name_feature][field][first_row]
+                            for field in ("pt", "eta", "phi", "e")
+                        )
+                        pt2, eta2, phi2, e2 = (
+                            f[name_feature][field][second_row]
+                            for field in ("pt", "eta", "phi", "e")
+                        )
+                        z_mass = _compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
+                        z_masses.append(z_mass)
+                        n_pairs += 1
+                        z_count += 1
+
+        print(f"Processed file {j+1}/{len(h5_files)}: Found {z_count} Z masses", end='\r')
+    if global_mask is not False and n_pairs != len(global_mask):
+        raise ValueError(
+            f"Global mask length {len(global_mask)} does not match "
+            f"the expected pair count {n_pairs}."
+        )
+    print(f"Saving Z masses to {csv_output_path}")
+    np.savetxt(csv_output_path, z_masses)
+    return 1
 
 
 def get_data_length(h5_files_path):
@@ -266,7 +388,7 @@ def get_data_length(h5_files_path):
 
     Arguments:
     - h5_files_path (str or Path): The path to a file or directory containing H5 files.
-    
+
     Returns:
     - int: The total number of events across all H5 files.
     """
