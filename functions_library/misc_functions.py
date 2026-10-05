@@ -67,7 +67,10 @@ def _selected_rows_for_files(h5_files, mix_files, mixture_ratio, mixture_seed):
         mixture_seed=mixture_seed,
         y_field=None,
     )
-    return dataset.files, dataset.valid_rows
+    files = dataset.files
+    valid_rows = dataset.valid_rows
+    dataset.close()
+    return files, valid_rows
 
 def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
     """
@@ -168,7 +171,7 @@ def find_Z_peak(
     csv_output_path="z_masses.csv",
     namespace="electron",
     global_mask=False,
-    mix_files=None,
+    mix_files_path=None,
     mixture_ratio=None,
     mixture_seed=0,
 ):
@@ -191,6 +194,7 @@ def find_Z_peak(
     """
     print(f"Finding Z peak in H5 files at {h5_files_path}")
     h5_files = _h5_files_from_path(h5_files_path)
+    mix_files = _h5_files_from_path(mix_files_path) if mix_files_path is not None else None
     h5_files, selected_rows = _selected_rows_for_files(
         h5_files, mix_files, mixture_ratio, mixture_seed
     )
@@ -211,7 +215,6 @@ def find_Z_peak(
     else:
         raise ValueError(f"Invalid namespace: {namespace}. Must be one of 'electron', 'muon', or 'tau'.")
 
-    
     z_masses = []
     global_mask_index = 0
     for j, file in enumerate(h5_files):
@@ -240,25 +243,50 @@ def find_Z_peak(
             else:
                 local_mask = None
 
-            z_count = 0
-            for start, count in zip(indexes, n_egammas):
-                event_rows = file_rows[
-                    (file_rows >= start) & (file_rows < start + count)
-                ]
-                if count != 2 or len(event_rows) != 2:
-                    continue
-                selected_positions = np.searchsorted(file_rows, event_rows)
-                if local_mask is not None and not local_mask[selected_positions].all():
-                    continue
-                values = [
-                    f[name_feature][field][event_rows]
-                    for field in ("pt", "eta", "phi", "e")
-                ]
-                z_masses.append(_compute_Z_mass(
-                    values[0][0], values[1][0], values[2][0], values[3][0],
-                    values[0][1], values[1][1], values[2][1], values[3][1],
-                ))
-                z_count += 1
+            pt = f[name_feature]["pt"]
+            eta = f[name_feature]["eta"]
+            phi = f[name_feature]["phi"]
+            e = f[name_feature]["e"]
+
+            data = {"pt": pt, "eta": eta, "phi": phi, "e": e}
+
+            two_particle_events = np.asarray(n_egammas) == 2
+            two_particle_starts = indexes[two_particle_events].astype(np.int64)
+            if mix_files_path is None:
+                first_rows = two_particle_starts
+                second_rows = first_rows + 1
+                selected_positions = first_rows
+            else:
+                event_positions = np.searchsorted(
+                    file_rows, two_particle_starts, side="left"
+                )
+                event_ends = np.searchsorted(
+                    file_rows, two_particle_starts + 2, side="left"
+                )
+                complete_events = (event_ends - event_positions) == 2
+                event_positions = event_positions[complete_events]
+                first_rows = file_rows[event_positions]
+                second_rows = file_rows[event_positions + 1]
+                selected_positions = event_positions
+
+            if local_mask is not None:
+                keep = (
+                    local_mask[selected_positions]
+                    & local_mask[selected_positions + 1]
+                )
+                first_rows = first_rows[keep]
+                second_rows = second_rows[keep]
+
+            values = [
+                data[field][rows]
+                for rows in (first_rows, second_rows)
+                for field in ("pt", "eta", "phi", "e")
+            ]
+            z_masses.extend(_compute_Z_mass(
+                values[0], values[1], values[2], values[3],
+                values[4], values[5], values[6], values[7],
+            ))
+            z_count = len(first_rows)
         print(f"Processed file {j+1}/{len(h5_files)}: Found {z_count} Z masses", end='\r')
 
     if global_mask is not False and global_mask_index != len(global_mask):
@@ -276,7 +304,7 @@ def find_Z_peak_pairs(
     csv_output_path="z_masses.csv",
     namespace="electron",
     global_mask=False,
-    mix_files=None,
+    mix_files_path=None,
     mixture_ratio=None,
     mixture_seed=0,
 ):
@@ -290,7 +318,7 @@ def find_Z_peak_pairs(
     - csv_output_path (str): The path to the output CSV file where the Z masses will be saved. Default is "z_masses.csv".
     - namespace (str): The type of particles to consider for Z boson formation. Must be one of "electron", "muon", or "tau". Default is "electron".
     - global_mask (array-like or bool): An optional mask to filter the pairs. If False, no mask is applied. If provided, it should be a boolean array of the same length as the total number of particle pairs across all H5 files.
-    - mix_files (str, Path, or list): Optional mixed H5 file(s), following ZPairDataset semantics.
+    - mix_files_path (str or Path): Optional path to mixed H5 file(s), following ZPairDataset semantics.
     - mixture_ratio (float): Fraction of rows selected from the main files when mixing.
     - mixture_seed (int): Seed used for deterministic mixture row selection.
     
@@ -299,6 +327,8 @@ def find_Z_peak_pairs(
     """
     print(f"Finding Z peak in H5 files at {h5_files_path}")
     h5_files = _h5_files_from_path(h5_files_path)
+    mix_files = _h5_files_from_path(mix_files_path) if mix_files_path is not None else None
+
     h5_files, selected_rows = _selected_rows_for_files(
         h5_files, mix_files, mixture_ratio, mixture_seed
     )
@@ -339,37 +369,91 @@ def find_Z_peak_pairs(
             phi = f[name_feature]["phi"]
             e = f[name_feature]["e"]
 
+            data = {"pt": pt, "eta": eta, "phi": phi, "e": e}
+
             file_rows = selected_rows[j]
-            z_count = 0
-            for n, start in zip(n_egammas, indexes):
+            event_starts = np.asarray(indexes, dtype=np.int64)
+            event_counts = np.asarray(n_egammas, dtype=np.int64)
+            if mix_files_path is None:
+                event_positions = event_starts
+                event_ends = event_starts + event_counts
+            else:
+                event_positions = np.searchsorted(
+                    file_rows, event_starts, side="left"
+                )
+                event_ends = np.searchsorted(
+                    file_rows, event_starts + event_counts, side="left"
+                )
+
+            selected_counts = event_ends - event_positions
+            pairable_events = np.flatnonzero(selected_counts >= 2)
+            pair_counts = selected_counts[pairable_events] * (
+                selected_counts[pairable_events] - 1
+            ) // 2
+            pair_count = int(pair_counts.sum())
+
+            first_row_chunks = []
+            second_row_chunks = []
+            pair_event_chunks = []
+
+            two_particle_events = pairable_events[
+                selected_counts[pairable_events] == 2
+            ]
+            if len(two_particle_events):
+                first_row_chunks.append(file_rows[event_positions[two_particle_events]])
+                second_row_chunks.append(
+                    file_rows[event_positions[two_particle_events] + 1]
+                )
+                pair_event_chunks.append(two_particle_events)
+
+            for event_index in pairable_events[
+                selected_counts[pairable_events] > 2
+            ]:
                 event_rows = file_rows[
-                    (file_rows >= start) & (file_rows < start + n)
+                    event_positions[event_index]:event_ends[event_index]
                 ]
-                if len(event_rows) < 2:
-                    continue
-                for i in range(len(event_rows)):
-                    for j in range(i + 1, len(event_rows)):
-                        if global_mask is not False:
-                            if n_pairs >= len(global_mask):
-                                raise ValueError(
-                                    "Global mask is shorter than the expected pair sequence."
-                                )
-                            if not bool(global_mask[n_pairs]):
-                                n_pairs += 1
-                                continue
-                        first_row, second_row = event_rows[i], event_rows[j]
-                        pt1, eta1, phi1, e1 = (
-                            f[name_feature][field][first_row]
-                            for field in ("pt", "eta", "phi", "e")
+                first_positions, second_positions = np.triu_indices(
+                    len(event_rows), k=1
+                )
+                first_row_chunks.append(event_rows[first_positions])
+                second_row_chunks.append(event_rows[second_positions])
+                pair_event_chunks.append(
+                    np.full(len(first_positions), event_index, dtype=np.int64)
+                )
+
+            if first_row_chunks:
+                first_rows = np.concatenate(first_row_chunks)
+                second_rows = np.concatenate(second_row_chunks)
+                pair_event_ids = np.concatenate(pair_event_chunks)
+                order = np.argsort(pair_event_ids, kind="stable")
+                first_rows = first_rows[order]
+                second_rows = second_rows[order]
+
+                pair_slice = slice(n_pairs, n_pairs + pair_count)
+                if global_mask is not False:
+                    if n_pairs + pair_count > len(global_mask):
+                        raise ValueError(
+                            "Global mask is shorter than the expected pair sequence."
                         )
-                        pt2, eta2, phi2, e2 = (
-                            f[name_feature][field][second_row]
-                            for field in ("pt", "eta", "phi", "e")
-                        )
-                        z_mass = _compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
-                        z_masses.append(z_mass)
-                        n_pairs += 1
-                        z_count += 1
+                    selected_pairs = np.asarray(global_mask[pair_slice], dtype=bool)
+                    first_rows = first_rows[selected_pairs]
+                    second_rows = second_rows[selected_pairs]
+                z_count = len(first_rows)
+            else:
+                first_rows = second_rows = np.empty(0, dtype=np.int64)
+                z_count = 0
+            n_pairs += pair_count
+
+            if len(first_rows):
+                values = [
+                    data[field][rows]
+                    for rows in (first_rows, second_rows)
+                    for field in ("pt", "eta", "phi", "e")
+                ]
+                z_masses.extend(_compute_Z_mass(
+                    values[0], values[1], values[2], values[3],
+                    values[4], values[5], values[6], values[7],
+                ))
 
         print(f"Processed file {j+1}/{len(h5_files)}: Found {z_count} Z masses", end='\r')
     if global_mask is not False and n_pairs != len(global_mask):
