@@ -1,9 +1,26 @@
 import h5py
 import numpy as np
 import torch
+from torch.utils.data import DataLoader, Dataset
 from pathlib import Path
 
 from .dataset_classes import H5EgammaDataset
+
+
+class _FeatureOnlyDataset(Dataset):
+    """Expose feature-only batched reads to DataLoader workers."""
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        return self.dataset[index]
+
+    def __getitems__(self, indices):
+        return self.dataset.__getitems__(indices, include_target=False)
 
 def _h5_files_from_path(path):
     """
@@ -72,7 +89,7 @@ def _selected_rows_for_files(h5_files, mix_files, mixture_ratio, mixture_seed):
     dataset.close()
     return files, valid_rows
 
-def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
+def compute_mean_std(dataset, sample_size=100_000, batch_size=256, num_workers=0):
     """
     Given a dataset with two feature outputs and a target output and , compute the mean and standard deviation of its features for normalization. The computation is done using a random sample of the dataset to improve efficiency.
 
@@ -82,6 +99,7 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
     Keywords:
     - sample_size (int): The number of samples to use for computing the mean and standard deviation. Default is 100,000.
     - batch_size (int): The number of samples to process in each batch. Default is 256.
+    - num_workers (int): Number of DataLoader worker processes used for reads. Default is 0.
 
     Returns:
     - means: A tuple containing the mean of the features and the mean of the event features.
@@ -97,6 +115,20 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
     indices = np.concatenate([np.arange(batch * batch_size, (batch + 1) * batch_size) for batch in batch_indices])
     indices.sort()
 
+    if not isinstance(num_workers, int) or num_workers < 0:
+        raise ValueError("num_workers must be a non-negative integer.")
+
+    loader = None
+    if num_workers:
+        loader = DataLoader(
+            _FeatureOnlyDataset(dataset),
+            batch_size=batch_size,
+            sampler=indices.tolist(),
+            num_workers=num_workers,
+            persistent_workers=True,
+            pin_memory=True,
+        )
+
     feature_sum = None
     feature_squared_sum = None
 
@@ -104,16 +136,24 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256):
     feature_squared_sum_event = None
 
 
-    for start in range(0, len(indices), batch_size):
-        batch_indices = indices[start:start + batch_size]
-        sampled_data = dataset.__getitems__(batch_indices, include_target=False)
+    batches = loader if loader is not None else (
+        dataset.__getitems__(indices[start:start + batch_size], include_target=False)
+        for start in range(0, len(indices), batch_size)
+    )
+    for batch_number, sampled_data in enumerate(batches):
+        if loader is None:
+            features = torch.stack([
+                feature_row for feature_row, _, _ in sampled_data
+            ]).double()
+            event_features = torch.stack([
+                event_row for _, event_row, _ in sampled_data
+            ]).double()
+        else:
+            features, event_features, _ = sampled_data
+            features = features.double()
+            event_features = event_features.double()
 
-        features = torch.stack([
-            feature_row for feature_row, _, _ in sampled_data
-        ]).double()
-        event_features = torch.stack([
-            event_row for _, event_row, _ in sampled_data
-        ]).double()
+        start = batch_number * batch_size
 
         finite = torch.isfinite(features)
         safe_features = torch.where(finite, features, torch.zeros_like(features))
