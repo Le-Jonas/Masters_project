@@ -142,6 +142,8 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
+        samples_seen = 0
+        expected_batches = len(train_loader)
         for batch, data in enumerate(train_loader):
             inputs, eventwise_features, targets = _tuple_unpack_to_device(data, device)
 
@@ -165,11 +167,23 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
             loss.backward()
             optimizer.step()
 
-            running_loss += loss.item() * targets.size(0)
+            batch_size = targets.size(0)
+            running_loss += loss.item() * batch_size
+            samples_seen += batch_size
 
-            print(f'Batch {batch+1}/{len(train_loader)}, Loss: {loss.item():.4f}', end='\r')
+            average_loss = running_loss / samples_seen
+            print(
+                f'Batch {batch + 1}/{expected_batches}, '
+                f'Loss: {average_loss:.4f}',
+                end='\r',
+            )
 
-        epoch_loss = running_loss / len(train_loader.dataset)
+        if samples_seen != len(train_loader.dataset):
+            raise RuntimeError(
+                f"Training loader yielded {samples_seen} samples, "
+                f"but its dataset contains {len(train_loader.dataset)}."
+            )
+        epoch_loss = running_loss / samples_seen
 
         val_loss = validate_model(model, loss_function, val_loader, device, means, stds, log_target=log_target, binary_target=binary_target)
         val_losses.append(val_loss)
@@ -212,6 +226,7 @@ def validate_model(model, loss_function, val_loader, device='cpu', means=None, s
     # Validation phase
     model.eval()
     val_loss = 0.0
+    samples_seen = 0
     means_i, means_e = _move_to_device(means, device)
     stds_i, stds_e = _move_to_device(stds, device)
     binary_value = torch.as_tensor(binary_target, dtype=torch.float32, device=device) if binary_target is not False else None
@@ -235,9 +250,16 @@ def validate_model(model, loss_function, val_loader, device='cpu', means=None, s
 
             targets = targets.to(dtype=outputs.dtype)
             loss = loss_function(outputs, targets)
-            val_loss += loss.item() * targets.size(0)
+            batch_size = targets.size(0)
+            val_loss += loss.item() * batch_size
+            samples_seen += batch_size
 
-    val_loss /= len(val_loader.dataset)
+    if samples_seen != len(val_loader.dataset):
+        raise RuntimeError(
+            f"Validation loader yielded {samples_seen} samples, "
+            f"but its dataset contains {len(val_loader.dataset)}."
+        )
+    val_loss /= samples_seen
     return val_loss
 
 def predict(model, test_loader, device='cpu', means=None, stds=None, log_target=False):
