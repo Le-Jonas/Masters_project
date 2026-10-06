@@ -1,10 +1,29 @@
 import h5py
 import numpy as np
+import os
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 #from sqlalchemy import values
 from torch.utils.data import Dataset 
 import torch
 import time
+
+
+def _scan_h5_file_rows(path, feature_names, y_source, y_fields):
+    """Read one file's alignment and finite-target metadata in a worker."""
+    with h5py.File(path, "r") as h5_file:
+        lengths = {name: len(h5_file[name]) for name in feature_names}
+        if len(set(lengths.values())) != 1:
+            raise ValueError(f"Event data not aligned in {path}")
+        if y_fields:
+            values = [
+                np.asarray(h5_file[y_source][field][:], dtype=np.float32)
+                for field in y_fields
+            ]
+            target = np.stack(values, axis=-1)
+            return np.flatnonzero(np.isfinite(target).all(axis=-1))
+        return np.arange(next(iter(lengths.values())), dtype=np.int64)
+
 
 class H5EgammaDataset(Dataset):
     """
@@ -25,6 +44,8 @@ class H5EgammaDataset(Dataset):
     - mix_files (str or list of str): Path(s) to additional HDF5 file(s) to mix with the main dataset. Default is None which means no mixing is applied.
     - mixture_ratio (float): The ratio of the main dataset to the mixed dataset. Must be between 0 and 1. Default is None which means no mixing is applied.
     - mixture_seed (int): Random seed for reproducibility when mixing datasets. Default is 0.
+    - metadata_workers (int): Number of concurrent workers used to scan files during construction. Default is 8.
+    - metadata_backend (str): Scanner backend: "auto", "thread", or "process". Default is "auto".
     """
     def __init__(
         self,
@@ -38,11 +59,17 @@ class H5EgammaDataset(Dataset):
         mix_files=None,
         mixture_ratio=None,
         mixture_seed=0,
+        metadata_workers=8,
+        metadata_backend="auto",
     ):        
         if include_fields is not None and exclude_fields is not None:
             raise ValueError("Cannot specify both include_fields and exclude_fields.")
         if include_features is not None and exclude_features is not None:
             raise ValueError("Cannot specify both include_features and exclude_features.")
+        if not isinstance(metadata_workers, int) or metadata_workers < 1:
+            raise ValueError("metadata_workers must be a positive integer.")
+        if metadata_backend not in {"auto", "thread", "process"}:
+            raise ValueError('metadata_backend must be "auto", "thread", or "process".')
         
         def as_paths(paths):
             """
@@ -67,6 +94,8 @@ class H5EgammaDataset(Dataset):
         if mixture_ratio is not None and not 0 < mixture_ratio < 1:
             raise ValueError("mixture_ratio must be between 0 and 1.")
         self.mixture_ratio = mixture_ratio
+        self.metadata_workers = metadata_workers
+        self.metadata_backend = metadata_backend
         self.file_labels = [0] * len(self.files) + [1] * len(self.mix_files)
         self.files.extend(self.mix_files)
         self.y_source = y_source
@@ -110,20 +139,25 @@ class H5EgammaDataset(Dataset):
             )
             self.fields.extend([f"eventwise_{name}" for name in field_names])
 
-        #Finds the finite-target rows and creates offsets over the filtered dataset.
-        for path in self.files:
-            with h5py.File(path, "r") as h5_file:
-                lengths = {
-                    name: len(h5_file[name])
-                    for name in feature_names
-                }
-                if len(set(lengths.values())) != 1:
-                    raise ValueError(f"Event data not aligned in {path}")
-                if self.y_fields:
-                    target = self._read_target(h5_file, slice(None))
-                    valid_rows = np.flatnonzero(np.isfinite(target).all(axis=-1))
-                else:
-                    valid_rows = np.arange(next(iter(lengths.values())), dtype=np.int64)
+        # Processes avoid the HDF5 global lock that can serialize threaded reads.
+        backend = self.metadata_backend
+        if backend == "auto":
+            backend = "process" if os.name != "nt" else "thread"
+        executor_class = (
+            ProcessPoolExecutor if backend == "process" else ThreadPoolExecutor
+        )
+        scan_args = (
+            self.files,
+            [feature_names] * len(self.files),
+            [self.y_source] * len(self.files),
+            [self.y_fields] * len(self.files),
+        )
+        with executor_class(max_workers=min(self.metadata_workers, len(self.files))) as executor:
+            scanned_files = executor.map(
+                _scan_h5_file_rows,
+                *scan_args,
+            )
+            for valid_rows in scanned_files:
                 self.lengths.append(len(valid_rows))
                 self.valid_rows.append(valid_rows)
 
@@ -131,6 +165,12 @@ class H5EgammaDataset(Dataset):
             self._apply_mixture(mixture_ratio, mixture_seed)
 
         self.offsets = np.concatenate(([0], np.cumsum(self.lengths)))
+
+    def _scan_file_rows(self, path, feature_names):
+        """Return the valid row indices for one file during construction."""
+        return _scan_h5_file_rows(
+            path, feature_names, self.y_source, self.y_fields
+        )
 
     def __getstate__(self):
         """
@@ -851,12 +891,10 @@ class ZPairDataset(H5EgammaDataset):
 
         for file_index, valid_rows in enumerate(self.valid_rows):
             with h5py.File(self.files[file_index], "r") as h5_file:
-                eventwise = h5_file["eventwise"][:]
-                row_count = len(h5_file[self.features[0]])
-            event_starts = self._eventwise_first_indices(
-                eventwise, row_count
-            )
-            event_ends = event_starts + self._eventwise_counts(eventwise)
+                event_starts, event_counts, _ = self._get_eventwise_metadata(
+                    file_index, h5_file
+                )
+            event_ends = event_starts + event_counts
 
             # valid_rows is sorted, so locate each event's selected rows with
             # two binary searches instead of scanning the full array per event.
