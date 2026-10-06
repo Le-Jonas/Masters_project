@@ -25,6 +25,62 @@ def _scan_h5_file_rows(path, feature_names, y_source, y_fields):
         return np.arange(next(iter(lengths.values())), dtype=np.int64)
 
 
+def _build_file_pair_indices(path, valid_rows, feature_name):
+    """Build all pair and event indices for one file."""
+    with h5py.File(path, "r") as h5_file:
+        eventwise = h5_file["eventwise"]
+        field_names = eventwise.dtype.names
+        count_field = (
+            "nEgammas" if "nEgammas" in field_names
+            else "nMuons" if "nMuons" in field_names
+            else "nTaus" if "nTaus" in field_names
+            else field_names[0]
+        )
+        counts = np.asarray(eventwise[count_field][:], dtype=np.int64)
+        start_field = (
+            "firstEgammaIndex" if "firstEgammaIndex" in field_names
+            else "firstMuonIndex" if "firstMuonIndex" in field_names
+            else "firstTauIndex" if "firstTauIndex" in field_names
+            else None
+        )
+        if start_field is None:
+            starts = np.concatenate(([0], np.cumsum(counts[:-1], dtype=np.int64)))
+        else:
+            starts = np.asarray(eventwise[start_field][:], dtype=np.int64)
+            row_count = len(h5_file[feature_name])
+            if starts.size and starts[0] != 0:
+                shifted = starts - starts[0]
+                if shifted[-1] + counts[-1] == row_count and np.all(
+                    shifted[1:] == shifted[:-1] + counts[:-1]
+                ):
+                    starts = shifted
+            if not starts.size or starts[0] != 0 or starts[-1] + counts[-1] != row_count:
+                starts = np.concatenate(([0], np.cumsum(counts[:-1], dtype=np.int64)))
+
+    ends = starts + counts
+    event_row_starts = np.searchsorted(valid_rows, starts, side="left")
+    event_row_ends = np.searchsorted(valid_rows, ends, side="left")
+    selected_counts = event_row_ends - event_row_starts
+    pair_counts = selected_counts * (selected_counts - 1) // 2
+    pair_array = np.empty((int(pair_counts.sum()), 2), dtype=np.int64)
+    event_array = np.empty(len(pair_array), dtype=np.int64)
+
+    pair_start = 0
+    for event_index, (row_start, row_end, pair_count) in enumerate(
+        zip(event_row_starts, event_row_ends, pair_counts)
+    ):
+        if pair_count == 0:
+            continue
+        event_rows = valid_rows[row_start:row_end]
+        first_indices, second_indices = np.triu_indices(len(event_rows), k=1)
+        pair_end = pair_start + int(pair_count)
+        pair_array[pair_start:pair_end, 0] = event_rows[first_indices]
+        pair_array[pair_start:pair_end, 1] = event_rows[second_indices]
+        event_array[pair_start:pair_end] = event_index
+        pair_start = pair_end
+    return pair_array, event_array
+
+
 class H5EgammaDataset(Dataset):
     """
     Custom PyTorch Dataset class for loading and processing HDF5 files containing event and particle data.
@@ -889,42 +945,28 @@ class ZPairDataset(H5EgammaDataset):
         self.pair_event_indices = []
         self.pair_offsets = [0]
 
-        for file_index, valid_rows in enumerate(self.valid_rows):
-            with h5py.File(self.files[file_index], "r") as h5_file:
-                event_starts, event_counts, _ = self._get_eventwise_metadata(
-                    file_index, h5_file
+        pair_args = zip(
+            self.files,
+            self.valid_rows,
+            [self.features[0]] * len(self.files),
+        )
+        backend = self.metadata_backend
+        if backend == "auto":
+            backend = "process" if os.name != "nt" else "thread"
+        executor_class = (
+            ProcessPoolExecutor if backend == "process" else ThreadPoolExecutor
+        )
+        with executor_class(
+            max_workers=min(self.metadata_workers, len(self.files))
+        ) as executor:
+            pair_results = executor.map(_build_file_pair_indices, *zip(*pair_args))
+            for file_index, (pair_array, event_array) in enumerate(pair_results):
+                self.pair_file_indices.append(
+                    np.full(len(pair_array), file_index, dtype=np.int64)
                 )
-            event_ends = event_starts + event_counts
-
-            # valid_rows is sorted, so locate each event's selected rows with
-            # two binary searches instead of scanning the full array per event.
-            event_row_starts = np.searchsorted(valid_rows, event_starts, side="left")
-            event_row_ends = np.searchsorted(valid_rows, event_ends, side="left")
-            selected_counts = event_row_ends - event_row_starts
-            pair_counts = selected_counts * (selected_counts - 1) // 2
-            pair_array = np.empty((int(pair_counts.sum()), 2), dtype=np.int64)
-            event_array = np.empty(len(pair_array), dtype=np.int64)
-
-            pair_start = 0
-            for event_index, (row_start, row_end, pair_count) in enumerate(
-                zip(event_row_starts, event_row_ends, pair_counts)
-            ):
-                if pair_count == 0:
-                    continue
-                event_rows = valid_rows[row_start:row_end]
-                first_indices, second_indices = np.triu_indices(len(event_rows), k=1)
-                pair_end = pair_start + int(pair_count)
-                pair_array[pair_start:pair_end, 0] = event_rows[first_indices]
-                pair_array[pair_start:pair_end, 1] = event_rows[second_indices]
-                event_array[pair_start:pair_end] = event_index
-                pair_start = pair_end
-
-            self.pair_file_indices.append(
-                np.full(len(pair_array), file_index, dtype=np.int64)
-            )
-            self.pair_rows.append(pair_array)
-            self.pair_event_indices.append(event_array)
-            self.pair_offsets.append(self.pair_offsets[-1] + len(pair_array))
+                self.pair_rows.append(pair_array)
+                self.pair_event_indices.append(event_array)
+                self.pair_offsets.append(self.pair_offsets[-1] + len(pair_array))
 
         self.pair_offsets = np.asarray(self.pair_offsets, dtype=np.int64)
         self.fields = (
