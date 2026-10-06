@@ -235,22 +235,6 @@ def crystal_ball_double(
     return shape / (np.sqrt(2 * np.pi) * stddev)
 
 
-def data_fit_ratio(x, ratio):
-    """
-    Function that combines a Breit-Wigner convolved with a Crystal Ball function and an exponential decay function, weighted by a given ratio.
-
-    Arguments:
-    - x (array-like): The input values.
-    - ratio (float): The ratio of the two components.
-
-    Returns:
-    - array-like: The values of the fitted distribution at the input values.
-    """
-    return (
-        ratio * breit_wigner_crystal_ball(x, *vals_egam1)
-        + (1 - ratio) * exponential_decay(x, *vals_egam7)
-    )
-
 def true_data_fit(x, amplitude_sig, amplitude_bkg, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
     """
     Function that combines a Breit-Wigner convolved with a Crystal Ball function and an exponential decay function, weighted by their respective amplitudes.

@@ -352,8 +352,9 @@ def find_Z_peak_pairs(
     
     z_masses = []
     n_pairs = 0
+    mask_array = None if global_mask is False else np.asarray(global_mask, dtype=bool).reshape(-1)
 
-    for j, file in enumerate(h5_files):
+    for file_index, file in enumerate(h5_files):
         with h5py.File(file, 'r') as f:
             n_egammas = f["eventwise"][name_n]
             indexes = np.asarray(f["eventwise"][name_index], dtype=np.uint64)
@@ -371,19 +372,15 @@ def find_Z_peak_pairs(
 
             data = {"pt": pt, "eta": eta, "phi": phi, "e": e}
 
-            file_rows = selected_rows[j]
+            file_rows = selected_rows[file_index]
             event_starts = np.asarray(indexes, dtype=np.int64)
             event_counts = np.asarray(n_egammas, dtype=np.int64)
-            if mix_files_path is None:
-                event_positions = event_starts
-                event_ends = event_starts + event_counts
-            else:
-                event_positions = np.searchsorted(
-                    file_rows, event_starts, side="left"
-                )
-                event_ends = np.searchsorted(
-                    file_rows, event_starts + event_counts, side="left"
-                )
+            event_positions = np.searchsorted(
+                file_rows, event_starts, side="left"
+            )
+            event_ends = np.searchsorted(
+                file_rows, event_starts + event_counts, side="left"
+            )
 
             selected_counts = event_ends - event_positions
             pairable_events = np.flatnonzero(selected_counts >= 2)
@@ -430,12 +427,12 @@ def find_Z_peak_pairs(
                 second_rows = second_rows[order]
 
                 pair_slice = slice(n_pairs, n_pairs + pair_count)
-                if global_mask is not False:
-                    if n_pairs + pair_count > len(global_mask):
+                if mask_array is not None:
+                    if n_pairs + pair_count > len(mask_array):
                         raise ValueError(
                             "Global mask is shorter than the expected pair sequence."
                         )
-                    selected_pairs = np.asarray(global_mask[pair_slice], dtype=bool)
+                    selected_pairs = mask_array[pair_slice]
                     first_rows = first_rows[selected_pairs]
                     second_rows = second_rows[selected_pairs]
                 z_count = len(first_rows)
@@ -455,10 +452,15 @@ def find_Z_peak_pairs(
                     values[4], values[5], values[6], values[7],
                 ))
 
-        print(f"Processed file {j+1}/{len(h5_files)}: Found {z_count} Z masses", end='\r')
-    if global_mask is not False and n_pairs != len(global_mask):
+        print(
+            f"Processed file {file_index + 1}/{len(h5_files)}: "
+            f"Found {z_count} selected Z masses ({n_pairs} candidate pairs processed)",
+            end='\r',
+            flush=True,
+        )
+    if mask_array is not None and n_pairs != len(mask_array):
         raise ValueError(
-            f"Global mask length {len(global_mask)} does not match "
+            f"Global mask length {len(mask_array)} does not match "
             f"the expected pair count {n_pairs}."
         )
     print(f"Saving Z masses to {csv_output_path}")
