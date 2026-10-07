@@ -1,10 +1,13 @@
 from torch import nn
 import torch
+from torch.autograd import Function
 
 class NeuralNetwork(nn.Module):
     """
-    A simple flat feedforward neural network with customizable hidden layers and activation functions.
-    Activation functions used are SiLU for hidden layers and no activation for the output layer.
+    A flat feedforward neural network with configurable hidden-layer sizes.
+
+    SiLU activations are used after each hidden layer. The output layer has
+    no activation function.
 
     Arguments:
     - input_size (int): The number of input features.
@@ -178,6 +181,32 @@ class ParticlePairNetwork(nn.Module):
             nn.Linear(consolidation_hidden_sizes[1], output_size),
         )
 
+    def encode(
+        self,
+        particle1_features: torch.Tensor,
+        particle2_features: torch.Tensor,
+        event_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        An encoding function that processes the features of two particles and event features through their respective branches and concatenates the resulting embeddings.
+
+        Arguments:
+        - particle1_features (torch.Tensor): The features for the first particle.
+        - particle2_features (torch.Tensor): The features for the second particle.
+        - event_features (torch.Tensor): The features for the event.
+
+        Returns:
+        - torch.Tensor: The concatenated embeddings from the particle and event branches.
+        """
+        particle1_embedding = self.particle1_branch(particle1_features)
+        particle2_embedding = self.particle2_branch(particle2_features)
+        event_embedding = self.event_branch(event_features)
+
+        return torch.cat(
+            [particle1_embedding, particle2_embedding, event_embedding],
+            dim=-1,
+        )
+
     def forward(self, particle1_features : torch.Tensor, particle2_features : torch.Tensor, event_features : torch.Tensor) -> torch.Tensor:
         """
         Forward pass through the network. Combines the outputs of the particle and event branches and passes them through a combination classifier network.
@@ -190,8 +219,106 @@ class ParticlePairNetwork(nn.Module):
         Returns:
         - torch.Tensor: The output of the classifier.
         """
-        particle1_embedding = self.particle1_branch(particle1_features)
-        particle2_embedding = self.particle2_branch(particle2_features)
-        event_embedding = self.event_branch(event_features)
-        combined = torch.cat([particle1_embedding, particle2_embedding, event_embedding], dim=-1)
-        return self.classifier(combined).squeeze(-1)
+        embedding = self.encode(
+            particle1_features,
+            particle2_features,
+            event_features,
+        )
+        return self.classifier(embedding).squeeze(-1)
+
+class GradientReversalFunction(Function):
+    """
+    Autograd implementation of a gradient-reversal operation.
+
+    The forward pass returns the input unchanged. During backpropagation,
+    the gradient with respect to the input is multiplied by -strength.
+
+    Arguments:
+    - features (torch.Tensor): The input features to the layer.
+    - strength (float): The scalar by which to multiply the gradient during the backward pass.
+    """
+    @staticmethod
+    def forward(ctx, features : torch.Tensor, strength : float):
+        """
+        Return ``features`` unchanged while storing the reversal strength.
+
+        Arguments:
+        - features (torch.Tensor): Input feature tensor.
+        - strength (float): Gradient scaling factor.
+
+        Returns:
+        - torch.Tensor: The input features, unchanged in value.
+
+        """
+        ctx.strength = strength
+        return features.clone()
+
+    @staticmethod
+    def backward(ctx, gradient : torch.Tensor):
+        """
+        Reverse and scale the gradient from the downstream operation.
+
+        Arguments:
+        - gradient (torch.Tensor): Gradient received from the downstream layer.
+
+        Returns:
+        - tuple[torch.Tensor, None]: Reversed feature gradient and no gradient
+        for the scalar strength argument.
+        """
+        return -ctx.strength * gradient, None
+
+class GradientReversal(nn.Module):
+    """
+    A module that implements a gradient reversal layer. This layer reverses the gradient during backpropagation, which is useful for adversarial training.
+
+    Arguments:
+    - strength (float): The scalar by which to multiply the gradient during the backward pass.
+    """
+    def __init__(self, strength: float = 1.0):
+        super().__init__()
+        self.strength = strength
+
+    def forward(self, features : torch.Tensor) -> torch.Tensor:
+        """
+        Pass features through unchanged during the forward pass and reverse
+        their gradient during backpropagation.
+
+        Arguments:
+        - features (torch.Tensor): Input feature representation.
+
+        Returns:
+        - torch.Tensor: The same feature values with gradient reversal enabled.
+        """
+        return GradientReversalFunction.apply(features, self.strength)
+
+class DomainAdversary(nn.Module):
+    """
+    A neural network designed to predict the domain of input features. It is typically used in domain adaptation tasks, where the goal is to learn features that are invariant across different domains.
+    The network consists of a simple feedforward architecture with one hidden layer and SiLU activation.
+
+    Arguments:
+    - embedding_size (int): The number of input features (size of the embedding).
+    - domain_count (int): The number of output classes (domains) to predict.
+    """
+    def __init__(self, embedding_size : int, domain_count : int):
+        super().__init__()
+
+        self.model = nn.Sequential(
+            nn.Linear(embedding_size, 32),
+            nn.SiLU(),
+            nn.Linear(32, domain_count),
+        )
+
+    def forward(self, embedding : torch.Tensor) -> torch.Tensor:
+        """
+        Predict domain logits from an embedding.
+
+        Arguments:
+        - embedding (torch.Tensor): Input embedding of shape
+        ``(batch_size, embedding_size)``.
+
+        Returns:
+        - torch.Tensor: Domain logits of shape
+        ``(batch_size, domain_count)``.
+        """
+        return self.model(embedding)
