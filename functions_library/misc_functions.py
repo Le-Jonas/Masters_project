@@ -10,19 +10,19 @@ from .dataset_classes import H5EgammaDataset
 class _FeatureOnlyDataset(Dataset):
     """Expose feature-only batched reads to DataLoader workers."""
 
-    def __init__(self, dataset):
+    def __init__(self, dataset : Dataset):
         self.dataset = dataset
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.dataset)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index : int) -> tuple[torch.Tensor, torch.Tensor]:
         return self.dataset[index]
 
-    def __getitems__(self, indices):
+    def __getitems__(self, indices : list[int]) -> list[tuple[torch.Tensor, torch.Tensor]]:
         return self.dataset.__getitems__(indices, include_target=False)
 
-def _h5_files_from_path(path):
+def _h5_files_from_path(path : str | Path) -> list[Path]:
     """
     Given a path, return a list of H5 files. If the path is a file, return a list containing that file.
     If the path is a directory, return a sorted list of all H5 files in that directory.
@@ -40,7 +40,7 @@ def _h5_files_from_path(path):
         return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
     raise FileNotFoundError(f"H5 path does not exist: {path}")
 
-def _compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2):
+def _compute_Z_mass(pt1 : float, eta1 : float, phi1 : float, e1 : float, pt2 : float, eta2 : float, phi2 : float, e2 : float) -> float:
     """
     Given the transverse momentum (pt), pseudorapidity (eta), azimuthal angle (phi), and energy (e) of two particles, compute the invariant mass of the Z boson formed by these two particles.
 
@@ -60,7 +60,7 @@ def _compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2):
     z_mass = np.sqrt(np.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
     return z_mass
 
-def _selected_rows_for_files(h5_files, mix_files, mixture_ratio, mixture_seed):
+def _selected_rows_for_files(h5_files : list[Path], mix_files : str | Path | list[Path] | None, mixture_ratio : float, mixture_seed : int) -> tuple[list[Path], list[np.ndarray]]:
     """Return the row selections used by H5EgammaDataset for each file."""
     if mix_files is None:
         dataset_mix_files = None
@@ -89,7 +89,7 @@ def _selected_rows_for_files(h5_files, mix_files, mixture_ratio, mixture_seed):
     dataset.close()
     return files, valid_rows
 
-def compute_mean_std(dataset, sample_size=100_000, batch_size=256, num_workers=0):
+def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 256, num_workers : int = 0) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
     """
     Given a dataset with two feature outputs and a target output and , compute the mean and standard deviation of its features for normalization. The computation is done using a random sample of the dataset to improve efficiency.
 
@@ -207,14 +207,14 @@ def compute_mean_std(dataset, sample_size=100_000, batch_size=256, num_workers=0
 
 
 def find_Z_peak(
-    h5_files_path,
-    csv_output_path="z_masses.csv",
-    namespace="electron",
-    global_mask=False,
-    mix_files_path=None,
-    mixture_ratio=None,
-    mixture_seed=0,
-):
+    h5_files_path : str | Path,
+    csv_output_path : str | Path = "z_masses.csv",
+    namespace : str = "electron",
+    global_mask : bool | np.ndarray = False,
+    mix_files_path : str | Path | list[Path] | None =None,
+    mixture_ratio : float | None = None,
+    mixture_seed : int = 0,
+) -> int:
     """
     Given a path to H5 files, compute the invariant mass of Z bosons formed by pairs of particles (electrons, muons, or taus) and save the results to a CSV file. Optionally, apply a global mask to filter the particles.
 
@@ -340,14 +340,14 @@ def find_Z_peak(
     return 1
 
 def find_Z_peak_pairs(
-    h5_files_path,
-    csv_output_path="z_masses.csv",
-    namespace="electron",
-    global_mask=False,
-    mix_files_path=None,
-    mixture_ratio=None,
-    mixture_seed=0,
-):
+    h5_files_path : str | Path,
+    csv_output_path : str | Path = "z_masses.csv",
+    namespace : str = "electron",
+    global_mask : bool | np.ndarray = False,
+    mix_files_path : str | Path | list[Path] | None = None,
+    mixture_ratio : float | None = None,
+    mixture_seed : int = 0,
+) -> int:
     """
     Given a path to H5 files, compute the invariant mass of Z bosons formed by pairs of particles (electrons, muons, or taus) and save the results to a CSV file. Optionally, apply a global mask to filter the particles.
 
@@ -508,7 +508,7 @@ def find_Z_peak_pairs(
     return 1
 
 
-def get_data_length(h5_files_path):
+def get_data_length(h5_files_path : str | Path) -> int:
     """
     Given a path to H5 files, compute the total number of events across all files. If the path is a file, return the number of events in that file. If the path is a directory, return the sum of events across all H5 files in that directory.
 

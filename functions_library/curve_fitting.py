@@ -1,8 +1,15 @@
 from iminuit import Minuit
 import numpy as np
+import numpy.typing as npt
 from scipy.signal import fftconvolve
 
-def fit_function(data, bins, function, initial_guess, limits=None):
+def fit_function(
+    data: npt.ArrayLike, 
+    bins: int | npt.ArrayLike, 
+    function: callable, 
+    initial_guess: npt.ArrayLike, 
+    limits : npt.ArrayLike | None = None,
+) -> tuple[npt.ArrayLike, npt.ArrayLike, float]:
     """
     Fit a function to a histogram of data.
 
@@ -75,7 +82,7 @@ def fit_function(data, bins, function, initial_guess, limits=None):
 
     return np.asarray(minimizer.values), np.asarray(minimizer.errors), minimizer.fval
 
-def gaussian(x, mean, stddev):
+def gaussian(x : npt.ArrayLike, mean : float, stddev : float) -> npt.ArrayLike:
     """
     Normalized Gaussian distribution.
 
@@ -92,7 +99,8 @@ def gaussian(x, mean, stddev):
     )
 
 
-def crystal_ball_left(x, mean, stddev, alpha, n):
+
+def crystal_ball_left(x : npt.ArrayLike, mean : float, stddev : float, alpha : float, n : float) -> npt.ArrayLike:
     """
     Crystal Ball shape with a power-law tail on the low-x side.
 
@@ -121,7 +129,8 @@ def crystal_ball_left(x, mean, stddev, alpha, n):
     return shape / (np.sqrt(2 * np.pi) * stddev)
 
 
-def breit_wigner(x, mass, width):
+
+def breit_wigner(x : npt.ArrayLike, mass : float, width : float) -> npt.ArrayLike:
     """
     Normalized non-relativistic Breit-Wigner distribution.
 
@@ -138,7 +147,7 @@ def breit_wigner(x, mass, width):
         (x - mass) ** 2 + half_width ** 2
     )
 
-def exponential_decay(x, amplitude, decay_constant):
+def exponential_decay(x : npt.ArrayLike, amplitude : float, decay_constant : float) -> npt.ArrayLike:
     """
     Exponential decay function.
 
@@ -153,8 +162,14 @@ def exponential_decay(x, amplitude, decay_constant):
     return amplitude * np.exp(-decay_constant * x)
 
 def breit_wigner_crystal_ball(
-    x, amplitude, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb
-):
+    x : npt.ArrayLike, 
+    amplitude : float, 
+    mean_bw : float, 
+    width_bw : float, 
+    sigma_cb : float, 
+    alpha_cb : float, 
+    n_cb : float,
+) -> npt.ArrayLike:
     """
     Breit-Wigner convolved with a low-mass Crystal Ball response.
 
@@ -193,8 +208,14 @@ def breit_wigner_crystal_ball(
 
 
 def crystal_ball_double(
-    x, mean, stddev, alpha_left, n_left, alpha_right, n_right
-):
+    x : npt.ArrayLike, 
+    mean : float, 
+    stddev : float, 
+    alpha_left : float, 
+    n_left : float, 
+    alpha_right : float, 
+    n_right : float,
+) -> npt.ArrayLike:
     """
     Crystal Ball shape with independent low- and high-x power-law tails.
     
@@ -235,7 +256,18 @@ def crystal_ball_double(
     return shape / (np.sqrt(2 * np.pi) * stddev)
 
 
-def true_data_fit(x, amplitude_sig, amplitude_bkg, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
+
+def true_data_fit(
+    x : npt.ArrayLike, 
+    amplitude_sig : float, 
+    amplitude_bkg : float, 
+    mean_bw : float, 
+    width_bw : float, 
+    sigma_cb : float, 
+    alpha_cb : float, 
+    n_cb : float, 
+    decay_constant : float,
+) -> npt.ArrayLike:
     """
     Function that combines a Breit-Wigner convolved with a Crystal Ball function and an exponential decay function, weighted by their respective amplitudes.
 

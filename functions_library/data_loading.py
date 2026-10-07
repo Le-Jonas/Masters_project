@@ -18,12 +18,12 @@ class ShuffledContiguousBatchSampler(Sampler):
     - dataset (Dataset): The dataset to sample from.
     """
     #Initializes the sampler with the dataset size and batch size. It will create batches of contiguous indices and shuffle them for each epoch.
-    def __init__(self, dataset_size, batch_size, dataset=None):
+    def __init__(self, dataset_size : int, batch_size : int, dataset : _class_.Dataset | None = None):
         self.dataset_size = dataset_size
         self.batch_size = batch_size
         self.dataset = dataset
 
-    def _size(self):
+    def _size(self) -> int:
         """
         Returns the size of the dataset. If a dataset is provided, it returns the length of the dataset; otherwise, it returns the specified dataset size.
 
@@ -32,7 +32,7 @@ class ShuffledContiguousBatchSampler(Sampler):
         """
         return len(self.dataset) if self.dataset is not None else self.dataset_size
 
-    def _offsets(self):
+    def _offsets(self) -> list:
         """
         Finds the offsets for each file in the dataset. If the dataset has a 'pair_offsets' attribute, it returns that; otherwise, it returns the 'offsets' attribute.
 
@@ -97,7 +97,7 @@ class ShuffledContiguousBatchSampler(Sampler):
         np.random.shuffle(batches)
         yield from batches
 
-    def __len__(self):
+    def __len__(self) -> int:
         """
         Returns the number of batches in the dataset.
         If the dataset has a 'mix_files' attribute set to True, it calculates the number of batches based on the mixture ratio and the number of samples from each source.
@@ -125,7 +125,21 @@ class ShuffledContiguousBatchSampler(Sampler):
         size = self._size()
         return (size + self.batch_size - 1) // self.batch_size
 
-def h5_to_csv(h5_file_path, csv_file_path, y_source, y_field, exclude_features=None, exclude_fields=None, include_features=None, include_fields=None, batch_size=256, sample_size=100_000, mix_h5_file_path=None, mixture_ratio=None, mixture_seed=0):
+def h5_to_csv(
+    h5_file_path : str | Path, 
+    csv_file_path : str | Path, 
+    y_source : str, 
+    y_field : str, 
+    exclude_features : list[str] | None = None, 
+    exclude_fields : list[str] | None = None, 
+    include_features : list[str] | None = None, 
+    include_fields : list[str] | None = None, 
+    batch_size : int = 256, 
+    sample_size : int = 100_000, 
+    mix_h5_file_path : str | Path | None = None, 
+    mixture_ratio : float | None = None, 
+    mixture_seed : int = 0,
+) -> int:
     """
     Converts H5 files to CSV format, normalizing the features based on the mean and standard deviation calculated from a sample of the dataset.
 
@@ -153,16 +167,8 @@ def h5_to_csv(h5_file_path, csv_file_path, y_source, y_field, exclude_features=N
     h5_file_path = Path(h5_file_path)
     csv_file_path = Path(csv_file_path)
 
-    def h5_files_from_path(path):
-        path = Path(path)
-        if path.is_file():
-            return [path]
-        if path.is_dir():
-            return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
-        raise FileNotFoundError(f"H5 path does not exist: {path}")
-
-    h5_files = h5_files_from_path(h5_file_path)
-    mix_h5_files = h5_files_from_path(mix_h5_file_path) if mix_h5_file_path is not None else None
+    h5_files = _misc_._h5_files_from_path(h5_file_path)
+    mix_h5_files = _misc_._h5_files_from_path(mix_h5_file_path) if mix_h5_file_path is not None else None
     if not h5_files:
         raise FileNotFoundError(f"No H5 files found in {h5_file_path}")
     if mix_h5_file_path is not None and not mix_h5_files:
@@ -171,7 +177,7 @@ def h5_to_csv(h5_file_path, csv_file_path, y_source, y_field, exclude_features=N
     if mix_h5_files is not None:
         print(f"Mixing with {len(mix_h5_files)} H5 files at ratio {mixture_ratio}", end='\r')
 
-    dataset = _class_.H5EgammaDataset_fully_batched(
+    dataset = _class_.H5EgammaDataset(
         files=h5_files,
         mix_files=mix_h5_files,
         mixture_ratio=mixture_ratio,
@@ -211,7 +217,20 @@ def h5_to_csv(h5_file_path, csv_file_path, y_source, y_field, exclude_features=N
     dataset.close()
     return 1
 
-def h5_to_npy(h5_file_path, npy_file_path, y_source, y_field, exclude_features=None, exclude_fields=None, include_features=None, include_fields=None, batch_size=256, sample_size=100_000, mix_h5_file_path=None, mixture_ratio=None, mixture_seed=0):
+def h5_to_npy(h5_file_path : str | Path, 
+    npy_file_path : str | Path, 
+    y_source : str, 
+    y_field : str, 
+    exclude_features : list[str] | None = None, 
+    exclude_fields : list[str] | None = None, 
+    include_features : list[str] | None = None, 
+    include_fields : list[str] | None = None, 
+    batch_size : int = 256, 
+    sample_size : int = 100_000, 
+    mix_h5_file_path : str | Path | None = None, 
+    mixture_ratio : float | None = None, 
+    mixture_seed : int = 0
+) -> int:
     """
     Convert H5 files to a binary NumPy file.
 
@@ -238,8 +257,8 @@ def h5_to_npy(h5_file_path, npy_file_path, y_source, y_field, exclude_features=N
     print(f"Converting H5 files in {h5_file_path} to binary NumPy data at {npy_file_path}")
     npy_file_path = Path(npy_file_path)
 
-    h5_files = _misc_.h5_files_from_path(h5_file_path)
-    mix_h5_files = _misc_.h5_files_from_path(mix_h5_file_path) if mix_h5_file_path is not None else None
+    h5_files = _misc_._h5_files_from_path(h5_file_path)
+    mix_h5_files = _misc_._h5_files_from_path(mix_h5_file_path) if mix_h5_file_path is not None else None
     if not h5_files:
         raise FileNotFoundError(f"No H5 files found in {h5_file_path}")
     if mix_h5_file_path is not None and not mix_h5_files:
@@ -248,7 +267,7 @@ def h5_to_npy(h5_file_path, npy_file_path, y_source, y_field, exclude_features=N
     if mix_h5_files is not None:
         print(f"Mixing with {len(mix_h5_files)} H5 files at ratio {mixture_ratio}", end='\r')
 
-    dataset = _class_.H5EgammaDataset_fully_batched(
+    dataset = _class_.H5EgammaDataset(
         files=h5_files,
         mix_files=mix_h5_files,
         mixture_ratio=mixture_ratio,

@@ -11,7 +11,7 @@ class NeuralNetwork(nn.Module):
     - hidden_sizes (list of int): A list containing the sizes of each hidden layer.
     - output_size (int): The number of output features.
     """
-    def __init__(self, input_size, hidden_sizes, output_size):
+    def __init__(self, input_size : int, hidden_sizes : list[int], output_size : int):
         super().__init__()
         layers = []
         last_size = input_size
@@ -22,7 +22,7 @@ class NeuralNetwork(nn.Module):
         layers.append(nn.Linear(last_size, output_size))
         self.model = nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x : torch.Tensor) -> torch.Tensor:
         """
         Forward pass through the network.
         
@@ -49,15 +49,15 @@ class ParticleOriginNetwork(nn.Module):
     """
     def __init__(
         self,
-        particle_size,
-        event_size,
-        particle_hidden_sizes,
-        event_hidden_sizes,
-        output_size,
+        particle_size : int,
+        event_size : int,
+        particle_hidden_sizes : list[int],
+        event_hidden_sizes : list[int],
+        output_size : int,
     ):
         super().__init__()
 
-        def _make_branch(input_size, hidden_sizes):
+        def _make_branch(input_size : int, hidden_sizes : list[int]) -> nn.Sequential:
             """
             Creates a sequential branch of layers for either particle or event features.
 
@@ -96,7 +96,7 @@ class ParticleOriginNetwork(nn.Module):
             nn.Linear(32, output_size),
         )
 
-    def forward(self, particle_features, event_features):
+    def forward(self, particle_features : torch.Tensor, event_features : torch.Tensor) -> torch.Tensor:
         """
         Forward pass through the network. Combines the outputs of the particle and event branches and passes them through a combination classifier network.
 
@@ -128,16 +128,16 @@ class ParticlePairNetwork(nn.Module):
     """
     def __init__(
         self,
-        particle_size,
-        event_size,
-        particle_hidden_sizes,
-        event_hidden_sizes,
-        consolidation_hidden_sizes,
-        output_size,
+        particle_size : int,
+        event_size : int,
+        particle_hidden_sizes : list[int],
+        event_hidden_sizes : list[int],
+        consolidation_hidden_sizes : list[int],
+        output_size : int,
     ):
         super().__init__()
 
-        def _make_branch(input_size, hidden_sizes):
+        def _make_branch(input_size : int, hidden_sizes : list[int]) -> nn.Sequential:
             """
             Creates a sequential branch of layers for either particle or event features.
 
@@ -178,7 +178,7 @@ class ParticlePairNetwork(nn.Module):
             nn.Linear(consolidation_hidden_sizes[1], output_size),
         )
 
-    def forward(self, particle1_features, particle2_features, event_features):
+    def forward(self, particle1_features : torch.Tensor, particle2_features : torch.Tensor, event_features : torch.Tensor) -> torch.Tensor:
         """
         Forward pass through the network. Combines the outputs of the particle and event branches and passes them through a combination classifier network.
 

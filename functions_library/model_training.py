@@ -2,7 +2,7 @@ import torch
 import copy
 import numpy as np
 
-def _move_to_device(values, device):
+def _move_to_device(values : tuple, device : torch.device) -> tuple:
     """
     Move a tuple of values to the specified device.
 
@@ -19,7 +19,7 @@ def _move_to_device(values, device):
         else (None, None)
     )
 
-def _function_on_inputs(function, inputs, args, kwargs={}):
+def _function_on_inputs(function : callable, inputs : torch.Tensor | tuple, args : tuple, kwargs : dict = {}) -> torch.Tensor | tuple:
     """
     Apply a function to inputs, which can be a single tensor or a tuple of tensors.
 
@@ -36,7 +36,7 @@ def _function_on_inputs(function, inputs, args, kwargs={}):
         return tuple(function(value, *args, **kwargs) for value in inputs)
     return function(inputs, *args, **kwargs)
 
-def _normalize_inputs(inputs, means, stds):
+def _normalize_inputs(inputs : torch.Tensor | tuple, means : torch.Tensor, stds : torch.Tensor) -> torch.Tensor | tuple:
     """
     Normalize inputs using provided means and standard deviations.
 
@@ -55,7 +55,7 @@ def _normalize_inputs(inputs, means, stds):
     else:
         return inputs
 
-def _tuple_unpack_to_device(data, device):
+def _tuple_unpack_to_device(data : tuple, device : torch.device) -> tuple:
     """
     Unpack a tuple of data and move each element to the specified device.
 
@@ -79,7 +79,7 @@ def _tuple_unpack_to_device(data, device):
         inputs = (inputs_1, inputs_2)
     return inputs, eventwise_features, targets
 
-def _prepare_binary_targets(targets, binary_value):
+def _prepare_binary_targets(targets : torch.Tensor, binary_value : float) -> torch.Tensor:
     """
     Prepare binary targets for training by converting them to a binary format based on the specified binary value.
 
@@ -98,7 +98,19 @@ def _prepare_binary_targets(targets, binary_value):
         targets = targets[:, 0] * targets[:, 1]
     return targets.reshape(-1)
 
-def train_model(model, optimizer, loss_function, train_loader, val_loader, num_epochs=10, device='cpu', means=None, stds=None, log_target=False, binary_target=False):
+def train_model(
+        model : torch.nn.Module, 
+        optimizer : torch.optim.Optimizer, 
+        loss_function : callable, 
+        train_loader : torch.utils.data.DataLoader, 
+        val_loader : torch.utils.data.DataLoader, 
+        num_epochs : int = 10, 
+        device : str | torch.device = 'cpu', 
+        means : tuple | None = None,
+        stds : tuple | None = None, 
+        log_target : bool = False, 
+        binary_target : bool | float = False
+    ) -> tuple[torch.nn.Module, list, list]:
     """
     Train a PyTorch model using the provided training and validation data loaders, optimizer, and loss function.
 
@@ -204,7 +216,16 @@ def train_model(model, optimizer, loss_function, train_loader, val_loader, num_e
 
 
 
-def validate_model(model, loss_function, val_loader, device='cpu', means=None, stds=None, log_target=False, binary_target=False):
+def validate_model(
+        model : torch.nn.Module, 
+        loss_function : callable, 
+        val_loader : torch.utils.data.DataLoader, 
+        device : str | torch.device = 'cpu', 
+        means : tuple | None = None, 
+        stds : tuple | None = None, 
+        log_target : bool = False, 
+        binary_target : bool | float = False
+        ) -> float:
     """
     Validate a PyTorch model using the provided validation data loader and loss function.
 
@@ -262,7 +283,14 @@ def validate_model(model, loss_function, val_loader, device='cpu', means=None, s
     val_loss /= samples_seen
     return val_loss
 
-def predict(model, test_loader, device='cpu', means=None, stds=None, log_target=False):
+def predict(
+    model : torch.nn.Module, 
+    test_loader : torch.utils.data.DataLoader, 
+    device : str | torch.device = 'cpu', 
+    means : tuple | None = None, 
+    stds : tuple | None = None, 
+    log_target : bool = False
+) -> np.ndarray:
     """
     Predict using a trained PyTorch model on the provided test data loader.
 

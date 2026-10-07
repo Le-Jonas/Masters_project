@@ -1,5 +1,6 @@
 import h5py
 import numpy as np
+import numpy.typing as npt
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
@@ -9,8 +10,19 @@ import torch
 import time
 
 
-def _scan_h5_file_rows(path, feature_names, y_source, y_fields):
-    """Read one file's alignment and finite-target metadata in a worker."""
+def _scan_h5_file_rows(path : Path, feature_names : list[str], y_source : str, y_fields : list[str]) -> np.ndarray:
+    """
+    Read one file's alignment and finite-target metadata in a worker.
+    
+    Arguments:
+    - path (Path): The path to the H5 file.
+    - feature_names (list of str): The names of the features to check for alignment.
+    - y_source (str): The source of the target variable.
+    - y_fields (list of str): The fields of the target variable.
+
+    Returns:
+    - np.ndarray: An array of valid row indices.
+    """
     with h5py.File(path, "r") as h5_file:
         lengths = {name: len(h5_file[name]) for name in feature_names}
         if len(set(lengths.values())) != 1:
@@ -25,8 +37,18 @@ def _scan_h5_file_rows(path, feature_names, y_source, y_fields):
         return np.arange(next(iter(lengths.values())), dtype=np.int64)
 
 
-def _build_file_pair_indices(path, valid_rows, feature_name):
-    """Build all pair and event indices for one file."""
+def _build_file_pair_indices(path : Path, valid_rows : np.ndarray, feature_name : str) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build all pair and event indices for one file.
+    
+    Arguments:
+    - path (Path): The path to the H5 file.
+    - valid_rows (np.ndarray): An array of valid row indices.
+    - feature_name (str): The name of the feature to build indices for.
+
+    Returns:
+    - tuple[np.ndarray, np.ndarray]: A tuple containing the pair indices and event indices.
+    """
     with h5py.File(path, "r") as h5_file:
         eventwise = h5_file["eventwise"]
         field_names = eventwise.dtype.names
@@ -105,18 +127,18 @@ class H5EgammaDataset(Dataset):
     """
     def __init__(
         self,
-        files,
-        y_source="truth",
-        y_field="pt",
-        exclude_fields=None,
-        exclude_features=None,
-        include_fields=None,
-        include_features=None,
-        mix_files=None,
-        mixture_ratio=None,
-        mixture_seed=0,
-        metadata_workers=8,
-        metadata_backend="auto",
+        files : str | list[str] | Path | list[Path],
+        y_source : str = "truth",
+        y_field : str | list[str] = "pt",
+        exclude_fields : list[str] | None = None,
+        exclude_features : list[str] | None = None,
+        include_fields : list[str] | None = None,
+        include_features : list[str] | None = None,
+        mix_files : str | list[str] | Path | list[Path] | None = None,
+        mixture_ratio : float | None = None,
+        mixture_seed : int = 0,
+        metadata_workers : int = 8,
+        metadata_backend : str = "auto",
     ):        
         if include_fields is not None and exclude_fields is not None:
             raise ValueError("Cannot specify both include_fields and exclude_fields.")
@@ -127,7 +149,7 @@ class H5EgammaDataset(Dataset):
         if metadata_backend not in {"auto", "thread", "process"}:
             raise ValueError('metadata_backend must be "auto", "thread", or "process".')
         
-        def as_paths(paths):
+        def as_paths(paths : str | Path | list[str] | list[Path]) -> list[Path]:
             """
             Convert a single path or a list of paths to a list of Path objects.
 
@@ -222,13 +244,13 @@ class H5EgammaDataset(Dataset):
 
         self.offsets = np.concatenate(([0], np.cumsum(self.lengths)))
 
-    def _scan_file_rows(self, path, feature_names):
+    def _scan_file_rows(self, path : str | Path, feature_names : list[str]) -> np.ndarray:
         """Return the valid row indices for one file during construction."""
         return _scan_h5_file_rows(
             path, feature_names, self.y_source, self.y_fields
         )
 
-    def __getstate__(self):
+    def __getstate__(self) -> dict[str, object]:
         """
         Get the state of the dataset for pickling. This method is used to prepare the dataset for serialization, ensuring that file handles and caches are not included in the serialized state.
 
@@ -243,7 +265,7 @@ class H5EgammaDataset(Dataset):
         state["eventwise_metadata_cache"] = {}
         return state
 
-    def _get_handle(self, file_index):
+    def _get_handle(self, file_index : int) -> h5py.File:
         """
         Get the HDF5 file handle for a given file index. If the handle does not exist, it opens the file and stores the handle.
 
@@ -262,13 +284,13 @@ class H5EgammaDataset(Dataset):
             self.handles[file_index] = h5py.File(self.files[file_index], "r")
         return self.handles[file_index]
 
-    def _global_file_index(self, index, offsets=None):
+    def _global_file_index(self, index : int, offsets : npt.ArrayLike | None = None) -> int:
         """
         Find the file index corresponding to a given global index across all files. This method uses the offsets of the dataset to determine which file contains the data for the specified index.
 
         Arguments:
         - index (int): The global index for which to find the corresponding file index.
-        - offsets (numpy.ndarray, optional): The offsets of the dataset. If not provided, the dataset's own offsets will be used.
+        - offsets (array_like, optional): The offsets of the dataset. If not provided, the dataset's own offsets will be used.
 
         Returns:
         - int: The file index corresponding to the given global index.
@@ -281,7 +303,7 @@ class H5EgammaDataset(Dataset):
             )
         return int(np.searchsorted(offsets, index, side="right") - 1)
 
-    def _apply_mixture(self, mixture_ratio, mixture_seed):
+    def _apply_mixture(self, mixture_ratio : float, mixture_seed : int) -> None:
         """
         Apply a mixture of the main dataset and the mixed dataset based on the specified mixture ratio. This method selects rows from both datasets according to the mixture ratio and updates the valid rows and lengths accordingly.
 
@@ -332,7 +354,7 @@ class H5EgammaDataset(Dataset):
         self.lengths = [len(rows) for rows in self.valid_rows]
 
     #Finds the total length of the dataset by summing the lengths of all files. (Cumsum has already been calculated)
-    def __len__(self):
+    def __len__(self) -> int:
         """
         Get the total length of the dataset by summing the lengths of all files. This method returns the total number of valid rows across all files in the dataset.
 
@@ -342,7 +364,7 @@ class H5EgammaDataset(Dataset):
         return int(self.offsets[-1])
 
     #Finds the file and row index corresponding to a given global index across all files.
-    def _get_file_and_row(self, index):
+    def _get_file_and_row(self, index : int) -> tuple[int, h5py.File, int]:
         """
         Get the file index and local row index corresponding to a given global index across all files. This method uses the dataset's offsets to determine which file contains the data for the specified global index and calculates the local row index within that file.
 
@@ -357,7 +379,7 @@ class H5EgammaDataset(Dataset):
         local_index = int(self.valid_rows[file_index][filtered_index])
         return file_index, self._get_handle(file_index), local_index
 
-    def _selected_field_names(self, feature_name, field_names):
+    def _selected_field_names(self, feature_name : str, field_names : list[str]) -> list[str]:
         """
         Get the names of the fields that should be included in the dataset based on the feature name and the list of available field names.
 
@@ -376,7 +398,7 @@ class H5EgammaDataset(Dataset):
             return [name for name in field_names if name in self.include_fields and name not in excluded]
         return [name for name in field_names if name not in excluded]
 
-    def _read_target(self, h5_file, indices):
+    def _read_target(self, h5_file : h5py.File, indices : npt.ArrayLike) -> np.ndarray:
         """
         Read the target variable from the specified HDF5 file for the given indices. This method retrieves the values of the target variable fields and stacks them into a single array.
 
@@ -394,12 +416,12 @@ class H5EgammaDataset(Dataset):
         return np.stack(values, axis=-1)
 
     #Converts a structured row to a flat array using the same field selection as the header.
-    def _structured_to_array(self, rows, feature_name):
+    def _structured_to_array(self, rows : np.ndarray, feature_name : str) -> np.ndarray:
         """
         Convert a structured row to a flat array using the same field selection as the header. This method retrieves the values of the specified fields from the structured rows and concatenates them into a single flat array.
 
         Arguments:
-        - rows (numpy.ndarray): The structured rows to convert.
+        - rows (ndarray): The structured rows to convert.
         - feature_name (str): The name of the feature (e.g., "eventwise", "truth") for which to retrieve the field names.
 
         Returns:
@@ -409,7 +431,7 @@ class H5EgammaDataset(Dataset):
         values = [np.asarray(rows[name], dtype=np.float32).reshape(-1) for name in names]
         return np.concatenate(values) if values else np.empty(0, dtype=np.float32)
 
-    def _eventwise_feature_matrix(self, eventwise):
+    def _eventwise_feature_matrix(self, eventwise : np.ndarray) -> np.ndarray:
         """
         Create a feature matrix from the eventwise data. This method retrieves the values of the specified eventwise fields and concatenates them into a single feature matrix.
 
@@ -430,7 +452,7 @@ class H5EgammaDataset(Dataset):
             axis=1,
         )
 
-    def _eventwise_first_indices(self, eventwise, row_count=None):
+    def _eventwise_first_indices(self, eventwise : np.ndarray, row_count : int | None = None) -> np.ndarray:
         """
         Get the first indices of each event in the eventwise data.
 
@@ -473,7 +495,7 @@ class H5EgammaDataset(Dataset):
         # correct row mapping when explicit indices fail validation.
         return np.concatenate(([0], np.cumsum(counts[:-1], dtype=np.int64)))
 
-    def _get_eventwise_first_indices(self, file_index, h5_file, eventwise):
+    def _get_eventwise_first_indices(self, file_index : int, h5_file : h5py.File, eventwise : np.ndarray) -> np.ndarray:
         """
         Get the first indices of each event in the eventwise data for a specific file. This method caches the first indices for each file to avoid redundant calculations.
 
@@ -494,7 +516,7 @@ class H5EgammaDataset(Dataset):
             )
         return self.eventwise_first_indices_cache[file_index]
 
-    def _get_eventwise_metadata(self, file_index, h5_file):
+    def _get_eventwise_metadata(self, file_index : int, h5_file : h5py.File) -> tuple[np.ndarray, np.ndarray, str]:
         """
         Get the metadata for the eventwise data for a specific file. This method caches the metadata for each file to avoid redundant calculations.
 
@@ -540,7 +562,7 @@ class H5EgammaDataset(Dataset):
             )
         return self.eventwise_metadata_cache[file_index]
 
-    def _read_eventwise_rows(self, h5_file, event_indices):
+    def _read_eventwise_rows(self, h5_file : h5py.File, event_indices : npt.ArrayLike) -> np.ndarray:
         """
         Read the eventwise rows from the specified HDF5 file for the given event indices. This method retrieves the rows corresponding to the specified event indices from the eventwise dataset.
 
@@ -555,7 +577,7 @@ class H5EgammaDataset(Dataset):
         eventwise_dataset = h5_file["eventwise"]
         return eventwise_dataset[event_indices]
 
-    def _eventwise_counts(self, eventwise):
+    def _eventwise_counts(self, eventwise : np.ndarray) -> np.ndarray:
         """
         Find the counts of particles for each event in the eventwise data. This method retrieves the counts of particles (e.g., number of electrons, muons, or taus) for each event from the eventwise dataset.
 
@@ -576,11 +598,11 @@ class H5EgammaDataset(Dataset):
     #Tries to read aligned rows in few contiguous slices if possible, otherwise reads them individually. Returns the rows and the sort order of the indices.
     def _read_aligned_rows(
         self,
-        h5_file,
-        indices,
-        include_target=True,
-        prefer_contiguous_span=False,
-    ):
+        h5_file : h5py.File,
+        indices : npt.ArrayLike,
+        include_target : bool = True,
+        prefer_contiguous_span : bool = False,
+    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
         """
         Read aligned rows from the specified HDF5 file for the given indices. This method attempts to read the rows in a few contiguous slices if possible, otherwise it reads them individually. It returns the rows and the sort order of the indices.
 
@@ -713,7 +735,16 @@ class H5EgammaDataset(Dataset):
         return {name: np.concatenate(rows[name]) for name in self.features}, np.concatenate(target), sort_order
 
     #This function groups a single data row into a torch tensor of features and a torch tensor of the target variable. It can also read the h5 file if no data is set yet.
-    def _read_one(self, h5_file, local_index, eventwise=None, first_indices=None, rows=None, target=None, eventwise_features=None):
+    def _read_one(
+        self, 
+        h5_file : h5py.File, 
+        local_index : int,
+        eventwise : np.ndarray | None = None, 
+        first_indices : npt.ArrayLike | None = None, 
+        rows : dict | None = None, 
+        target : npt.ArrayLike | None = None, 
+        eventwise_features : dict | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Read a single data row from the specified HDF5 file and return it as a tuple of torch tensors for features, eventwise features, and target variable. This method can also read the HDF5 file if no data is set yet.
 
@@ -722,10 +753,10 @@ class H5EgammaDataset(Dataset):
         - local_index (int): The local index of the row to read within the HDF5 file.
 
         Keywords:        
-        - eventwise (numpy.ndarray): The eventwise data to use for reading the row. If not provided, it will be read from the HDF5 file.
-        - first_indices (numpy.ndarray): The first indices of each event in the eventwise data. If not provided, it will be calculated from the eventwise data.
+        - eventwise (ndarray): The eventwise data to use for reading the row. If not provided, it will be read from the HDF5 file.
+        - first_indices (array-like): The first indices of each event in the eventwise data. If not provided, it will be calculated from the eventwise data.
         - rows (dict): A dictionary of pre-read rows for the features. If not provided, the rows will be read from the HDF5 file.
-        - target (numpy.ndarray): The target variable values for the row. If not provided, they will be read from the HDF5 file.
+        - target (array-like): The target variable values for the row. If not provided, they will be read from the HDF5 file.
         - eventwise_features (dict): A dictionary of pre-read eventwise features for the events. If not provided, they will be read from the HDF5 file.
 
         Returns:
@@ -733,7 +764,7 @@ class H5EgammaDataset(Dataset):
         """
         if eventwise is None:
             eventwise = h5_file["eventwise"][:]
-        eventwise_names = eventwise.dtype.names
+
         if first_indices is None:
             first_indices = self._eventwise_first_indices(
                 eventwise, len(h5_file[self.features[0]])
@@ -780,7 +811,7 @@ class H5EgammaDataset(Dataset):
         return torch.from_numpy(features), torch.from_numpy(eventwise_features), torch.tensor(target)
     
     #Depreciated single row read function. Torch dataloader will call __getitems__ instead of this function.
-    def __getitem__(self, index):
+    def __getitem__(self, index : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Main read function for the dataset. It retrieves a single data row based on the provided index, reads the corresponding HDF5 file, and returns a tuple of torch tensors for features, eventwise features, and target variable.
 
@@ -794,7 +825,7 @@ class H5EgammaDataset(Dataset):
         return self._read_one(h5_file, local_index)
 
     #Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs.
-    def __getitems__(self, indices, include_target=True):
+    def __getitems__(self, indices : list[int], include_target : bool = True) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs.
 
@@ -885,7 +916,7 @@ class npyDataset(Dataset):
     Arguments:
     - npy_file_path (str): The path to the .npy file.
     """
-    def __init__(self, npy_file_path):
+    def __init__(self, npy_file_path : str):
         self.data = np.load(npy_file_path)
         self.features = self.data[:, :-1]
         self.targets = self.data[:, -1]
@@ -899,7 +930,7 @@ class npyDataset(Dataset):
         """
         return len(self.targets)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Main read function for the dataset. It retrieves a single data row based on the provided index and returns a tuple of torch tensors for features and target variable.
 
@@ -913,7 +944,7 @@ class npyDataset(Dataset):
         target = self.targets[idx]
         return torch.from_numpy(features).float(), torch.tensor(target, dtype=torch.float32)
     
-    def __getitems__(self, indices):
+    def __getitems__(self, indices : list[int]) -> list[tuple[torch.Tensor, torch.Tensor]]:
         """
         Main read function for the fully batched dataset. It retrieves multiple data rows based on the provided indices and returns a list of tuples of torch tensors for features and target variable.
         
@@ -975,7 +1006,7 @@ class ZPairDataset(H5EgammaDataset):
             + [field for field in self.fields if field.startswith("eventwise_")]
         )
 
-    def __len__(self):
+    def __len__(self) -> int:
         """
         Find the number of pairs in the dataset.
 
@@ -984,7 +1015,7 @@ class ZPairDataset(H5EgammaDataset):
         """
         return int(self.pair_offsets[-1])
 
-    def _get_pair(self, index):
+    def _get_pair(self, index : int) -> tuple[int, int, int, int]:
         """
         Get the file index, first row, second row, and event index for a given pair index.
 
@@ -1005,7 +1036,7 @@ class ZPairDataset(H5EgammaDataset):
         event_index = self.pair_event_indices[file_index][local_pair_index]
         return file_index, int(first_row), int(second_row), int(event_index)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Main read function for the dataset. It retrieves a single pair of leptons based on the provided index, reads the corresponding HDF5 file, and returns a tuple of torch tensors for the features of both leptons, eventwise features, and target variable.
 
@@ -1043,7 +1074,7 @@ class ZPairDataset(H5EgammaDataset):
             torch.stack((first[2], second[2])),
         )
 
-    def __getitems__(self, indices):
+    def __getitems__(self, indices : list[int]) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs for each lepton pair.
 
