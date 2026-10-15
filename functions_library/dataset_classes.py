@@ -10,7 +10,34 @@ import torch
 import time
 
 
-def _scan_h5_file_rows(path : Path, feature_names : list[str], y_source : str, y_fields : list[str]) -> np.ndarray:
+def _resolve_target_fields(
+    h5_file: h5py.File,
+    y_source: str,
+    y_fields: list[str],
+    fallback_fields: list[str],
+) -> list[str]:
+    if not y_fields:
+        return []
+    if y_source not in h5_file:
+        raise KeyError(f"Unknown y source: {y_source}")
+    available_fields = h5_file[y_source].dtype.names
+    if all(field in available_fields for field in y_fields):
+        return y_fields
+    if fallback_fields and all(field in available_fields for field in fallback_fields):
+        return fallback_fields
+    raise KeyError(
+        f"Neither target fields {y_fields} nor fallback fields "
+        f"{fallback_fields} are available in {y_source}"
+    )
+
+
+def _scan_h5_file_rows(
+    path: Path,
+    feature_names: list[str],
+    y_source: str,
+    y_fields: list[str],
+    fallback_fields: list[str],
+) -> np.ndarray:
     """
     Read one file's alignment and finite-target metadata in a worker.
     
@@ -27,10 +54,13 @@ def _scan_h5_file_rows(path : Path, feature_names : list[str], y_source : str, y
         lengths = {name: len(h5_file[name]) for name in feature_names}
         if len(set(lengths.values())) != 1:
             raise ValueError(f"Event data not aligned in {path}")
-        if y_fields:
+        target_fields = _resolve_target_fields(
+            h5_file, y_source, y_fields, fallback_fields
+        )
+        if target_fields:
             values = [
                 np.asarray(h5_file[y_source][field][:], dtype=np.float32)
-                for field in y_fields
+                for field in target_fields
             ]
             target = np.stack(values, axis=-1)
             return np.flatnonzero(np.isfinite(target).all(axis=-1))
@@ -115,6 +145,7 @@ class H5EgammaDataset(Dataset):
     Keywords:
     - y_source (str): The source of the target variable, either "truth" or "eventwise". Default is "truth".
     - y_field (str or list of str): The field(s) to be used as the target variable. Default is "pt".
+    - fallback_target (str or list of str): Target field(s) used when the primary target fields are unavailable in a file. Default is None.
     - exclude_fields (list of str): List of field names to exclude from the dataset. Default is None which means all fields are included.
     - exclude_features (list of str): List of feature names to exclude from the dataset. Default is None which means all features are included.
     - include_fields (list of str): List of field names to include in the dataset. Default is None which means all fields are included.
@@ -130,6 +161,7 @@ class H5EgammaDataset(Dataset):
         files : str | list[str] | Path | list[Path],
         y_source : str = "truth",
         y_field : str | list[str] = "pt",
+        fallback_target : str | list[str] | None = None,
         exclude_fields : list[str] | None = None,
         exclude_features : list[str] | None = None,
         include_fields : list[str] | None = None,
@@ -178,6 +210,11 @@ class H5EgammaDataset(Dataset):
         self.files.extend(self.mix_files)
         self.y_source = y_source
         self.y_fields = [] if y_field is None else [y_field] if isinstance(y_field, str) else list(y_field)
+        self.fallback_fields = (
+            [] if fallback_target is None
+            else [fallback_target] if isinstance(fallback_target, str)
+            else list(fallback_target)
+        )
         self.exclude_fields = set(exclude_fields or [])
         self.include_fields = set(include_fields) if include_fields is not None else None
         self.valid_rows = []
@@ -191,8 +228,13 @@ class H5EgammaDataset(Dataset):
         with h5py.File(example_file, "r") as h5_file:
             feature_names = list(h5_file.keys())
             feature_names.remove("eventwise") if "eventwise" in h5_file else None
-            if self.y_fields and self.y_source not in feature_names:
-                raise KeyError(f"Unknown y source: {self.y_source}")
+            if self.y_fields:
+                _resolve_target_fields(
+                    h5_file,
+                    self.y_source,
+                    self.y_fields,
+                    self.fallback_fields,
+                )
             feature_names.remove("truth") if "truth" in h5_file else None
 
             if include_features is not None:
@@ -229,6 +271,7 @@ class H5EgammaDataset(Dataset):
             [feature_names] * len(self.files),
             [self.y_source] * len(self.files),
             [self.y_fields] * len(self.files),
+            [self.fallback_fields] * len(self.files),
         )
         with executor_class(max_workers=min(self.metadata_workers, len(self.files))) as executor:
             scanned_files = executor.map(
@@ -247,7 +290,11 @@ class H5EgammaDataset(Dataset):
     def _scan_file_rows(self, path : str | Path, feature_names : list[str]) -> np.ndarray:
         """Return the valid row indices for one file during construction."""
         return _scan_h5_file_rows(
-            path, feature_names, self.y_source, self.y_fields
+            path,
+            feature_names,
+            self.y_source,
+            self.y_fields,
+            self.fallback_fields,
         )
 
     def __getstate__(self) -> dict[str, object]:
@@ -393,6 +440,7 @@ class H5EgammaDataset(Dataset):
         excluded = set(self.exclude_fields)
         if feature_name == self.y_source:
             excluded.update(self.y_fields)
+            excluded.update(self.fallback_fields)
 
         if self.include_fields is not None:
             return [name for name in field_names if name in self.include_fields and name not in excluded]
@@ -409,9 +457,15 @@ class H5EgammaDataset(Dataset):
         Returns:
         - numpy.ndarray: A stacked array containing the values of the target variable fields for the specified indices.
         """
+        target_fields = _resolve_target_fields(
+            h5_file,
+            self.y_source,
+            self.y_fields,
+            self.fallback_fields,
+        )
         values = [
             np.asarray(h5_file[self.y_source][field][indices], dtype=np.float32)
-            for field in self.y_fields
+            for field in target_fields
         ]
         return np.stack(values, axis=-1)
 
@@ -616,6 +670,12 @@ class H5EgammaDataset(Dataset):
         - tuple: A tuple containing the rows, target values, and the sort order of the indices.
         """
         indices = np.asarray(indices, dtype=np.int64)
+        target_fields = _resolve_target_fields(
+            h5_file,
+            self.y_source,
+            self.y_fields,
+            self.fallback_fields,
+        )
         sort_order = np.argsort(indices)
         sorted_indices = indices[sort_order]
 
@@ -629,7 +689,7 @@ class H5EgammaDataset(Dataset):
                     name: h5_file[name][first:last][relative_indices]
                     for name in self.features
                 }
-                if not include_target or not self.y_fields:
+                if not include_target or not target_fields:
                     target = np.empty(
                         (len(sorted_indices), 0), dtype=np.float32
                     )
@@ -642,7 +702,7 @@ class H5EgammaDataset(Dataset):
                                 h5_file[self.y_source][field][sorted_indices],
                                 dtype=np.float32,
                             )
-                            for field in self.y_fields
+                            for field in target_fields
                         ],
                         axis=-1,
                     )
@@ -654,7 +714,7 @@ class H5EgammaDataset(Dataset):
         use_slices = len(run_starts) <= max(1, len(sorted_indices) // 2)
 
         if not include_target or self.mix_files:
-            if not include_target or not self.y_fields:
+            if not include_target or not target_fields:
                 target = np.empty((len(sorted_indices), 0), dtype=np.float32)
             elif self.y_source == "eventwise":
                 target = [None] * len(sorted_indices)
@@ -665,7 +725,7 @@ class H5EgammaDataset(Dataset):
                             h5_file[self.y_source][field][sorted_indices],
                             dtype=np.float32,
                         )
-                        for field in self.y_fields
+                        for field in target_fields
                     ],
                     axis=-1,
                 )
@@ -677,7 +737,7 @@ class H5EgammaDataset(Dataset):
 
         #Reverts to reading individual rows if the number of contiguous slices is too high, otherwise reads them in slices.
         if not use_slices:
-            if not include_target or not self.y_fields:
+            if not include_target or not target_fields:
                 target = np.empty((len(sorted_indices), 0), dtype=np.float32)
             elif self.y_source == "eventwise":
                 target = [None] * len(sorted_indices)
@@ -685,7 +745,7 @@ class H5EgammaDataset(Dataset):
                 target = target = np.stack(
                     [
                         np.asarray(h5_file[self.y_source][field][sorted_indices], dtype=np.float32)
-                        for field in self.y_fields
+                        for field in target_fields
                     ],
                     axis=-1,
                 )
@@ -707,13 +767,13 @@ class H5EgammaDataset(Dataset):
                     rows[name].append(h5_file[name][first:last])
                 else:
                     rows[name].append(h5_file[name][first:last][relative_indices])
-            if include_target and self.y_fields and self.y_source != "eventwise":
+            if include_target and target_fields and self.y_source != "eventwise":
                 if contiguous:
                     target.append(
                         np.stack(
                             [
                                 np.asarray(h5_file[self.y_source][field][first:last], dtype=np.float32)
-                                for field in self.y_fields
+                                for field in target_fields
                             ],
                             axis=-1,
                         )
@@ -723,12 +783,12 @@ class H5EgammaDataset(Dataset):
                         np.stack(
                             [
                                 np.asarray(h5_file[self.y_source][field][first:last], dtype=np.float32)
-                                for field in self.y_fields
+                                for field in target_fields
                             ],
                             axis=-1,
                         )
                     )
-        if not include_target or not self.y_fields:
+        if not include_target or not target_fields:
             return {name: np.concatenate(rows[name]) for name in self.features}, np.empty((len(sorted_indices), 0), dtype=np.float32), sort_order
         if self.y_source == "eventwise":
             return {name: np.concatenate(rows[name]) for name in self.features}, [None]*len(sorted_indices), sort_order
@@ -798,12 +858,19 @@ class H5EgammaDataset(Dataset):
         features = np.concatenate(feature_arrays)
         
                
-        if self.y_fields and self.y_source not in h5_file:
-            raise KeyError(f"Unknown y source: {self.y_source}")
+        target_fields = _resolve_target_fields(
+            h5_file,
+            self.y_source,
+            self.y_fields,
+            self.fallback_fields,
+        )
         target_index = event_index if self.y_source == "eventwise" else local_index
-        if target is None and self.y_fields:
+        if target is None and target_fields:
             target = np.asarray(
-                [h5_file[self.y_source][field][target_index] for field in self.y_fields],
+                [
+                    h5_file[self.y_source][field][target_index]
+                    for field in target_fields
+                ],
                 dtype=np.float32,
             )
         elif target is None:
@@ -811,7 +878,7 @@ class H5EgammaDataset(Dataset):
         return torch.from_numpy(features), torch.from_numpy(eventwise_features), torch.tensor(target)
     
     #Depreciated single row read function. Torch dataloader will call __getitems__ instead of this function.
-    def __getitem__(self, index : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Main read function for the dataset. It retrieves a single data row based on the provided index, reads the corresponding HDF5 file, and returns a tuple of torch tensors for features, eventwise features, and target variable.
 
@@ -819,13 +886,20 @@ class H5EgammaDataset(Dataset):
         - index (int): The global index of the data row to retrieve.
 
         Returns:
-        - tuple: A tuple containing the torch tensors for features, eventwise features, and target variable.
+        - tuple: A tuple containing feature tensors, eventwise features, the
+          target variable, and a domain target (0 for a main file, 1 for a
+          mixed file).
         """
         file_index, h5_file, local_index = self._get_file_and_row(index)
-        return self._read_one(h5_file, local_index)
+        features, eventwise_features, target = self._read_one(h5_file, local_index)
+        domain_target = torch.tensor(
+            self.file_labels[file_index],
+            dtype=torch.float32,
+        )
+        return features, eventwise_features, target, domain_target
 
     #Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs.
-    def __getitems__(self, indices : list[int], include_target : bool = True) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    def __getitems__(self, indices : list[int], include_target : bool = True) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs.
 
@@ -880,7 +954,7 @@ class H5EgammaDataset(Dataset):
             event_indices = np.searchsorted(first_indices, sorted_indices, side="right") - 1
             unique_event_indices = np.unique(event_indices)
             eventwise_rows = self._read_eventwise_rows(h5_file, unique_event_indices)
-            eventwise_features = {
+            cached_eventwise_features = {
                 int(event_index): self._structured_to_array(
                     eventwise_rows[position], "eventwise"
                 )
@@ -888,14 +962,23 @@ class H5EgammaDataset(Dataset):
             }
 
             for sorted_position, original_position in enumerate(np.argsort(sort_order)):
-                batch[positions[original_position][0]] = self._read_one(
+                features, row_eventwise_features, target_value = self._read_one(
                     h5_file,
                     int(sorted_indices[sorted_position]),
                     eventwise,
                     first_indices,
                     {name: rows[name][sorted_position] for name in rows},
                     target[sorted_position],
-                    eventwise_features,
+                    cached_eventwise_features,
+                )
+                batch[positions[original_position][0]] = (
+                    features,
+                    row_eventwise_features,
+                    target_value,
+                    torch.tensor(
+                        self.file_labels[file_index],
+                        dtype=torch.float32,
+                    ),
                 )
 
         return batch
@@ -961,7 +1044,9 @@ class npyDataset(Dataset):
 class ZPairDataset(H5EgammaDataset):
     """
     Dataset containing every unordered lepton pair from each event.
-    A returned item is (lepton1, lepton2, eventwise, target). Events with fewer than two selected leptons are omitted.
+    A returned item is (lepton1, lepton2, eventwise, target, domain_target).
+    The domain target is 0 for a main file and 1 for a mixed file. Events with
+    fewer than two selected leptons are omitted.
 
     Arguments:
     - files (list): A list of HDF5 file paths containing the dataset.
@@ -1036,7 +1121,7 @@ class ZPairDataset(H5EgammaDataset):
         event_index = self.pair_event_indices[file_index][local_pair_index]
         return file_index, int(first_row), int(second_row), int(event_index)
 
-    def __getitem__(self, index : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Main read function for the dataset. It retrieves a single pair of leptons based on the provided index, reads the corresponding HDF5 file, and returns a tuple of torch tensors for the features of both leptons, eventwise features, and target variable.
 
@@ -1072,9 +1157,13 @@ class ZPairDataset(H5EgammaDataset):
             second[0],
             first[1],
             torch.stack((first[2], second[2])),
+            torch.tensor(
+                self.file_labels[file_index],
+                dtype=torch.float32,
+            ),
         )
 
-    def __getitems__(self, indices : list[int]) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    def __getitems__(self, indices : list[int]) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs for each lepton pair.
 
@@ -1165,13 +1254,19 @@ class ZPairDataset(H5EgammaDataset):
                 )
                 self.eventwise_features_cache[file_index] = eventwise_features
 
-            if self.y_source == "eventwise" and self.y_fields:
+            target_fields = _resolve_target_fields(
+                h5_file,
+                self.y_source,
+                self.y_fields,
+                self.fallback_fields,
+            )
+            if self.y_source == "eventwise" and target_fields:
                 targets = np.stack(
                     [
                         np.asarray(
                             eventwise[field][row_event_indices], dtype=np.float32
                         )
-                        for field in self.y_fields
+                        for field in target_fields
                     ],
                     axis=-1,
                 )
@@ -1191,6 +1286,10 @@ class ZPairDataset(H5EgammaDataset):
                     second_features[batch_position],
                     pair_eventwise[batch_position],
                     pair_targets[batch_position],
+                    torch.tensor(
+                        self.file_labels[file_index],
+                        dtype=torch.float32,
+                    ),
                 )
 
         return batch

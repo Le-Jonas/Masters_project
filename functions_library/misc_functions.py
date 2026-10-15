@@ -143,13 +143,13 @@ def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size 
     for batch_number, sampled_data in enumerate(batches):
         if loader is None:
             features = torch.stack([
-                feature_row for feature_row, _, _ in sampled_data
+                feature_row for feature_row, _, _, _ in sampled_data
             ]).double()
             event_features = torch.stack([
-                event_row for _, event_row, _ in sampled_data
+                event_row for _, event_row, _, _ in sampled_data
             ]).double()
         else:
-            features, event_features, _ = sampled_data
+            features, event_features, _, _ = sampled_data
             features = features.double()
             event_features = event_features.double()
 
