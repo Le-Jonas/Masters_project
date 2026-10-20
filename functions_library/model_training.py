@@ -206,7 +206,6 @@ def train_model(
         gradient_reversal : torch.nn.Module | None = None,
         domain_loss_weight : float = 1.0,
         mixed_target_loss_weight : float = 0.25,
-        phi_target : bool = False
     ) -> tuple[torch.nn.Module, list, list]:
     """
     Train a PyTorch model using the provided training and validation data loaders, optimizer, and loss function.
@@ -235,7 +234,6 @@ def train_model(
     - mixed_target_loss_weight (float): Relative weight for the physics loss
       for samples with domain target 1, whose targets are weak labels.
       Default is 0.25.
-    - phi_target (bool): Whether the target is the azimuthal angle phi, which requires special handling. Default is False.
 
     Returns:
     - model (torch.nn.Module): The trained PyTorch model.
@@ -318,20 +316,13 @@ def train_model(
 
             targets = targets.to(dtype=outputs.dtype)
             
-            if phi_target:
-                means = outputs[..., 0]
-                log_vars = outputs[..., 1]
-                phi_residual = misc_functions.angular_difference(outputs, targets)
-                loss = 0.5 * (torch.exp(-log_vars) * phi_residual.square() + log_vars).mean()
-
-            else:
-                loss = _weighted_task_loss(
-                    loss_function,
-                    outputs,
-                    targets,
-                    domain_targets,
-                    mixed_target_loss_weight,
-                )
+            loss = _weighted_task_loss(
+                loss_function,
+                outputs,
+                targets,
+                domain_targets,
+                mixed_target_loss_weight,
+            )
             if domain_adversary is not None:
                 if domain_targets is None:
                     raise ValueError(
@@ -682,10 +673,6 @@ def compressed_training_function(
         domain_adversary = None
         gradient_reversal = None
 
-    phi_target = False
-    if y_field == "phi":
-        phi_target = True
-
     optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=0.001)
     train_losses, val_losses = train_model(model, 
                                            optimizer, 
@@ -703,5 +690,5 @@ def compressed_training_function(
                                            domain_loss_function = domain_loss_function, 
                                            domain_loss_weight = domain_loss_weight, 
                                            mixed_target_loss_weight = mixed_target_loss_weight,
-                                           phi_target = phi_target,)
+                                           )
     return model, train_losses, val_losses
