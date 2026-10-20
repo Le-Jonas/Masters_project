@@ -2,6 +2,8 @@ import torch
 import copy
 import numpy as np
 from typing import Callable
+from . import dataset_classes, neural_models, misc_functions, data_loading
+from torch.utils.data import DataLoader, Dataset
 
 def _move_to_device(values : tuple, device : torch.device) -> tuple:
     """
@@ -204,6 +206,7 @@ def train_model(
         gradient_reversal : torch.nn.Module | None = None,
         domain_loss_weight : float = 1.0,
         mixed_target_loss_weight : float = 0.25,
+        phi_target : bool = False
     ) -> tuple[torch.nn.Module, list, list]:
     """
     Train a PyTorch model using the provided training and validation data loaders, optimizer, and loss function.
@@ -232,6 +235,7 @@ def train_model(
     - mixed_target_loss_weight (float): Relative weight for the physics loss
       for samples with domain target 1, whose targets are weak labels.
       Default is 0.25.
+    - phi_target (bool): Whether the target is the azimuthal angle phi, which requires special handling. Default is False.
 
     Returns:
     - model (torch.nn.Module): The trained PyTorch model.
@@ -313,14 +317,21 @@ def train_model(
             outputs = model(*inputs, eventwise_features)
 
             targets = targets.to(dtype=outputs.dtype)
-            task_loss = _weighted_task_loss(
-                loss_function,
-                outputs,
-                targets,
-                domain_targets,
-                mixed_target_loss_weight,
-            )
-            loss = task_loss
+            
+            if phi_target:
+                means = outputs[..., 0]
+                log_vars = outputs[..., 1]
+                phi_residual = misc_functions.angular_difference(outputs, targets)
+                loss = 0.5 * (torch.exp(-log_vars) * phi_residual.square() + log_vars).mean()
+
+            else:
+                loss = _weighted_task_loss(
+                    loss_function,
+                    outputs,
+                    targets,
+                    domain_targets,
+                    mixed_target_loss_weight,
+                )
             if domain_adversary is not None:
                 if domain_targets is None:
                     raise ValueError(
@@ -567,3 +578,130 @@ def predict(
             predictions.append(outputs.cpu().numpy())
         print("Prediction completed")
     return np.concatenate(predictions)
+
+
+def compressed_training_function(
+    h5_files : list[str],
+    dataset_class : type[Dataset],
+    nn_model : type[torch.nn.Module],
+    model_kwargs : dict,
+    loss_function : torch.nn.Module,
+    optimizer_class : type[torch.optim.Optimizer],
+    num_epochs : int = 10,
+    mix_files : list[str] | None = None,
+    mixture_ratio : float = 0.5,
+    exclude_features : list[str] | None = None,
+    exclude_fields : list[str] | None = None,
+    y_source : str = "egammas",
+    y_field : str = "truthOrigin",
+    fallback_source : str | None = None,
+    fallback_field : list[str] | None = None,
+    batch_size : int = 4096,
+    num_workers : int = 8,
+    prefetch_factor : int = 2,
+    persistent_workers : bool = True,
+    pin_memory : bool = True,
+    domain_adversary : bool = False,
+    gradient_reversal_strength : float = 0.1,
+    domain_loss_weight : float = 0.25,
+    domain_loss_function : Callable | None = None,
+    mixed_target_loss_weight : float = 0.25,
+    binary_target : bool | float = False,
+    log_target : bool = False,
+    validation_split : float = 0.25,
+
+
+) -> tuple[torch.nn.Module, list, list]:
+    mean_dataset = dataset_classes.H5EgammaDataset(
+        h5_files,
+        mix_files = mix_files,
+        exclude_features = exclude_features,
+        exclude_fields = exclude_fields,
+        y_source = y_source,
+        y_field = y_field,
+        fallback_source = fallback_source,
+        fallback_field = fallback_field,
+        mixture_ratio = mixture_ratio,
+    )
+
+    means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=1000000, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+
+    train_size_egam = int((1 - validation_split) * len(h5_files))
+    train_size_data = int((1 - validation_split) * len(mix_files))
+
+    train_dataset = dataset_class(
+        h5_files[:train_size_egam],
+        mix_files = mix_files[:train_size_egam],
+        exclude_features = exclude_features,
+        exclude_fields = exclude_fields,
+        y_source = y_source,
+        y_field = y_field,
+        fallback_source = fallback_source,
+        fallback_field = fallback_field,
+        mixture_ratio = mixture_ratio,
+    )
+
+    val_dataset = dataset_class(
+        h5_files[train_size_egam:],
+        mix_files = mix_files[train_size_data:],
+        exclude_features = exclude_features,
+        exclude_fields = exclude_fields,
+        y_source = y_source,
+        y_field = y_field,
+        fallback_source = fallback_source,
+        fallback_field = fallback_field,
+        mixture_ratio = mixture_ratio,
+    )
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    train_sampler = data_loading.ShuffledContiguousBatchSampler(len(train_dataset), batch_size=batch_size, dataset=train_dataset)
+    train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, num_workers=num_workers, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers, pin_memory=pin_memory)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers, pin_memory=pin_memory)
+
+    particle_fields = [field for field in train_dataset.fields if not field.startswith("eventwise_")]
+    event_fields = [field for field in train_dataset.fields if field.startswith("eventwise_")]
+    particle_size = len(particle_fields) // 2
+    if len(particle_fields) % 2 != 0:
+        raise ValueError("Pair particle fields are not evenly split between the two particles.")
+
+    model = nn_model(
+        particle_size,
+        len(event_fields),
+        **model_kwargs
+    ).to(device)
+
+    embedding_size = model_kwargs["particle_hidden_sizes"][-1] * 2 + model_kwargs["event_hidden_sizes"][-1]
+
+    if domain_adversary:
+        domain_adversary = neural_models.DomainAdversary(
+            embedding_size=embedding_size,
+            domain_count=1,
+        )
+        gradient_reversal = neural_models.GradientReversal(strength = gradient_reversal_strength)
+    else:
+        domain_adversary = None
+        gradient_reversal = None
+
+    phi_target = False
+    if y_field == "phi":
+        phi_target = True
+
+    optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=0.001)
+    train_losses, val_losses = train_model(model, 
+                                           optimizer, 
+                                           loss_function, 
+                                           train_loader, 
+                                           val_loader, 
+                                           num_epochs=num_epochs, 
+                                           device=device, 
+                                           means=means, 
+                                           stds=stds, 
+                                           binary_target=binary_target, 
+                                           log_target=log_target,
+                                           domain_adversary = domain_adversary, 
+                                           gradient_reversal = gradient_reversal,
+                                           domain_loss_function = domain_loss_function, 
+                                           domain_loss_weight = domain_loss_weight, 
+                                           mixed_target_loss_weight = mixed_target_loss_weight,
+                                           phi_target = phi_target,)
+    return model, train_losses, val_losses

@@ -89,7 +89,7 @@ def _selected_rows_for_files(h5_files : list[Path], mix_files : str | Path | lis
     dataset.close()
     return files, valid_rows
 
-def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 256, num_workers : int = 0) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
+def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 256, num_workers : int = 0, pin_memory : bool = False, persistent_workers : bool = True) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
     """
     Given a dataset with two feature outputs and a target output and , compute the mean and standard deviation of its features for normalization. The computation is done using a random sample of the dataset to improve efficiency.
 
@@ -125,8 +125,8 @@ def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size 
             batch_size=batch_size,
             sampler=indices.tolist(),
             num_workers=num_workers,
-            persistent_workers=True,
-            pin_memory=True,
+            persistent_workers=persistent_workers,
+            pin_memory=pin_memory,
         )
 
     feature_sum = None
@@ -525,3 +525,20 @@ def get_data_length(h5_files_path : str | Path) -> int:
             total_length += len(f["eventwise"]["eventNumber"])
         print(f"Processed file {i+1}/{len(h5_files)}: Current total length is {total_length}", end='\r')
     return total_length
+
+def angular_difference(predicted : torch.Tensor, target : torch.Tensor) -> torch.Tensor:
+    """
+    Compute the angular difference between predicted and target angles, taking into account the periodicity of angles.
+    Needed for computing the loss for angular quantities like phi with correct variance.
+
+    Arguments:
+        predicted: A tensor of predicted angles (in radians).
+        target: A tensor of target angles (in radians).
+    
+    Returns:
+        A tensor of angular differences, wrapped to the range [-pi, pi].
+    """
+    return torch.atan2(
+        torch.sin(predicted - target),
+        torch.cos(predicted - target),
+    )

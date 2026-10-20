@@ -4,3 +4,4 @@ from .misc_functions import *
 from .model_training import *
 from .neural_models import *
 from .curve_fitting import *
+from .training_classes import *

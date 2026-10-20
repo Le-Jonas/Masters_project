@@ -10,25 +10,43 @@ import torch
 import time
 
 
+def _resolve_target_source_and_fields(
+    h5_file: h5py.File,
+    y_source: str,
+    y_fields: list[str],
+    fallback_source: str | None = None,
+    fallback_field: list[str] | None = None,
+) -> tuple[str, list[str]]:
+    if not y_fields:
+        return y_source, []
+    if y_source in h5_file:
+        available_fields = h5_file[y_source].dtype.names
+        if all(field in available_fields for field in y_fields):
+            return y_source, y_fields
+    if fallback_source and fallback_source in h5_file:
+        fallback_available_fields = h5_file[fallback_source].dtype.names
+        if fallback_field and all(field in fallback_available_fields for field in fallback_field):
+            return fallback_source, fallback_field
+    if y_source in h5_file and fallback_field:
+        available_fields = h5_file[y_source].dtype.names
+        if all(field in available_fields for field in fallback_field):
+            return y_source, fallback_field
+    raise KeyError(
+        f"Neither target fields {y_fields} nor fallback fields "
+        f"{fallback_field} are available in {y_source} nor {fallback_source}"
+    )
+
+
 def _resolve_target_fields(
     h5_file: h5py.File,
     y_source: str,
     y_fields: list[str],
-    fallback_fields: list[str],
+    fallback_source: str | None = None,
+    fallback_field: list[str] | None = None,
 ) -> list[str]:
-    if not y_fields:
-        return []
-    if y_source not in h5_file:
-        raise KeyError(f"Unknown y source: {y_source}")
-    available_fields = h5_file[y_source].dtype.names
-    if all(field in available_fields for field in y_fields):
-        return y_fields
-    if fallback_fields and all(field in available_fields for field in fallback_fields):
-        return fallback_fields
-    raise KeyError(
-        f"Neither target fields {y_fields} nor fallback fields "
-        f"{fallback_fields} are available in {y_source}"
-    )
+    return _resolve_target_source_and_fields(
+        h5_file, y_source, y_fields, fallback_source, fallback_field
+    )[1]
 
 
 def _scan_h5_file_rows(
@@ -36,7 +54,8 @@ def _scan_h5_file_rows(
     feature_names: list[str],
     y_source: str,
     y_fields: list[str],
-    fallback_fields: list[str],
+    fallback_source: str | None = None,
+    fallback_field: list[str] | None = None,
 ) -> np.ndarray:
     """
     Read one file's alignment and finite-target metadata in a worker.
@@ -54,12 +73,12 @@ def _scan_h5_file_rows(
         lengths = {name: len(h5_file[name]) for name in feature_names}
         if len(set(lengths.values())) != 1:
             raise ValueError(f"Event data not aligned in {path}")
-        target_fields = _resolve_target_fields(
-            h5_file, y_source, y_fields, fallback_fields
+        target_source, target_fields = _resolve_target_source_and_fields(
+            h5_file, y_source, y_fields, fallback_source=fallback_source, fallback_field=fallback_field
         )
         if target_fields:
             values = [
-                np.asarray(h5_file[y_source][field][:], dtype=np.float32)
+                np.asarray(h5_file[target_source][field][:], dtype=np.float32)
                 for field in target_fields
             ]
             target = np.stack(values, axis=-1)
@@ -145,7 +164,8 @@ class H5EgammaDataset(Dataset):
     Keywords:
     - y_source (str): The source of the target variable, either "truth" or "eventwise". Default is "truth".
     - y_field (str or list of str): The field(s) to be used as the target variable. Default is "pt".
-    - fallback_target (str or list of str): Target field(s) used when the primary target fields are unavailable in a file. Default is None.
+    - fallback_source (str or None): The source of the fallback target variable. Default is None.
+    - fallback_field (str or list of str): Target field(s) used when the primary target fields are unavailable in a file. Default is None.
     - exclude_fields (list of str): List of field names to exclude from the dataset. Default is None which means all fields are included.
     - exclude_features (list of str): List of feature names to exclude from the dataset. Default is None which means all features are included.
     - include_fields (list of str): List of field names to include in the dataset. Default is None which means all fields are included.
@@ -161,7 +181,8 @@ class H5EgammaDataset(Dataset):
         files : str | list[str] | Path | list[Path],
         y_source : str = "truth",
         y_field : str | list[str] = "pt",
-        fallback_target : str | list[str] | None = None,
+        fallback_source : str | None = None,
+        fallback_field : str | list[str] | None = None,
         exclude_fields : list[str] | None = None,
         exclude_features : list[str] | None = None,
         include_fields : list[str] | None = None,
@@ -210,10 +231,11 @@ class H5EgammaDataset(Dataset):
         self.files.extend(self.mix_files)
         self.y_source = y_source
         self.y_fields = [] if y_field is None else [y_field] if isinstance(y_field, str) else list(y_field)
-        self.fallback_fields = (
-            [] if fallback_target is None
-            else [fallback_target] if isinstance(fallback_target, str)
-            else list(fallback_target)
+        self.fallback_source = fallback_source
+        self.fallback_field = (
+            [] if fallback_field is None
+            else [fallback_field] if isinstance(fallback_field, str)
+            else list(fallback_field)
         )
         self.exclude_fields = set(exclude_fields or [])
         self.include_fields = set(include_fields) if include_fields is not None else None
@@ -233,7 +255,8 @@ class H5EgammaDataset(Dataset):
                     h5_file,
                     self.y_source,
                     self.y_fields,
-                    self.fallback_fields,
+                    self.fallback_source,
+                    self.fallback_field,
                 )
             feature_names.remove("truth") if "truth" in h5_file else None
 
@@ -271,7 +294,8 @@ class H5EgammaDataset(Dataset):
             [feature_names] * len(self.files),
             [self.y_source] * len(self.files),
             [self.y_fields] * len(self.files),
-            [self.fallback_fields] * len(self.files),
+            [self.fallback_source] * len(self.files),
+            [self.fallback_field] * len(self.files),
         )
         with executor_class(max_workers=min(self.metadata_workers, len(self.files))) as executor:
             scanned_files = executor.map(
@@ -294,7 +318,8 @@ class H5EgammaDataset(Dataset):
             feature_names,
             self.y_source,
             self.y_fields,
-            self.fallback_fields,
+            self.fallback_source,
+            self.fallback_field,
         )
 
     def __getstate__(self) -> dict[str, object]:
@@ -440,7 +465,7 @@ class H5EgammaDataset(Dataset):
         excluded = set(self.exclude_fields)
         if feature_name == self.y_source:
             excluded.update(self.y_fields)
-            excluded.update(self.fallback_fields)
+            excluded.update(self.fallback_field)
 
         if self.include_fields is not None:
             return [name for name in field_names if name in self.include_fields and name not in excluded]
@@ -457,14 +482,15 @@ class H5EgammaDataset(Dataset):
         Returns:
         - numpy.ndarray: A stacked array containing the values of the target variable fields for the specified indices.
         """
-        target_fields = _resolve_target_fields(
+        target_source, target_fields = _resolve_target_source_and_fields(
             h5_file,
             self.y_source,
             self.y_fields,
-            self.fallback_fields,
+            self.fallback_source,
+            self.fallback_field,
         )
         values = [
-            np.asarray(h5_file[self.y_source][field][indices], dtype=np.float32)
+            np.asarray(h5_file[target_source][field][indices], dtype=np.float32)
             for field in target_fields
         ]
         return np.stack(values, axis=-1)
@@ -670,11 +696,12 @@ class H5EgammaDataset(Dataset):
         - tuple: A tuple containing the rows, target values, and the sort order of the indices.
         """
         indices = np.asarray(indices, dtype=np.int64)
-        target_fields = _resolve_target_fields(
+        target_source, target_fields = _resolve_target_source_and_fields(
             h5_file,
             self.y_source,
             self.y_fields,
-            self.fallback_fields,
+            self.fallback_source,
+            self.fallback_field,
         )
         sort_order = np.argsort(indices)
         sorted_indices = indices[sort_order]
@@ -699,7 +726,7 @@ class H5EgammaDataset(Dataset):
                     target = np.stack(
                         [
                             np.asarray(
-                                h5_file[self.y_source][field][sorted_indices],
+                                h5_file[target_source][field][sorted_indices],
                                 dtype=np.float32,
                             )
                             for field in target_fields
@@ -722,7 +749,7 @@ class H5EgammaDataset(Dataset):
                 target = np.stack(
                     [
                         np.asarray(
-                            h5_file[self.y_source][field][sorted_indices],
+                            h5_file[target_source][field][sorted_indices],
                             dtype=np.float32,
                         )
                         for field in target_fields
@@ -744,7 +771,7 @@ class H5EgammaDataset(Dataset):
             else:
                 target = target = np.stack(
                     [
-                        np.asarray(h5_file[self.y_source][field][sorted_indices], dtype=np.float32)
+                        np.asarray(h5_file[target_source][field][sorted_indices], dtype=np.float32)
                         for field in target_fields
                     ],
                     axis=-1,
@@ -772,7 +799,7 @@ class H5EgammaDataset(Dataset):
                     target.append(
                         np.stack(
                             [
-                                np.asarray(h5_file[self.y_source][field][first:last], dtype=np.float32)
+                                np.asarray(h5_file[target_source][field][first:last], dtype=np.float32)
                                 for field in target_fields
                             ],
                             axis=-1,
@@ -782,7 +809,7 @@ class H5EgammaDataset(Dataset):
                     target.append(
                         np.stack(
                             [
-                                np.asarray(h5_file[self.y_source][field][first:last], dtype=np.float32)
+                                np.asarray(h5_file[target_source][field][first:last], dtype=np.float32)
                                 for field in target_fields
                             ],
                             axis=-1,
@@ -858,17 +885,18 @@ class H5EgammaDataset(Dataset):
         features = np.concatenate(feature_arrays)
         
                
-        target_fields = _resolve_target_fields(
+        target_source, target_fields = _resolve_target_source_and_fields(
             h5_file,
             self.y_source,
             self.y_fields,
-            self.fallback_fields,
+            self.fallback_source,
+            self.fallback_field,
         )
-        target_index = event_index if self.y_source == "eventwise" else local_index
+        target_index = event_index if target_source == "eventwise" else local_index
         if target is None and target_fields:
             target = np.asarray(
                 [
-                    h5_file[self.y_source][field][target_index]
+                    h5_file[target_source][field][target_index]
                     for field in target_fields
                 ],
                 dtype=np.float32,
@@ -1254,13 +1282,14 @@ class ZPairDataset(H5EgammaDataset):
                 )
                 self.eventwise_features_cache[file_index] = eventwise_features
 
-            target_fields = _resolve_target_fields(
+            target_source, target_fields = _resolve_target_source_and_fields(
                 h5_file,
                 self.y_source,
                 self.y_fields,
-                self.fallback_fields,
+                self.fallback_source,
+                self.fallback_field,
             )
-            if self.y_source == "eventwise" and target_fields:
+            if target_source == "eventwise" and target_fields:
                 targets = np.stack(
                     [
                         np.asarray(
