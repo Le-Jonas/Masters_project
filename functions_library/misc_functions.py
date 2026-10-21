@@ -3,9 +3,11 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 from pathlib import Path
+from numpy.typing import ArrayLike
 
 from .model_training import predict
 from .dataset_classes import H5EgammaDataset, ZPairDataset
+from .curve_fitting import fit_data_to_mc
 
 
 class _FeatureOnlyDataset(Dataset):
@@ -560,6 +562,7 @@ def angular_difference(predicted : torch.Tensor, target : torch.Tensor) -> torch
     )
 
 def create_pseudo_roc_curve(
+    mc_z_masses_path : tuple[str] | tuple[Path],
     mc_files : list[Path],
     data_files : list[Path],
     models : dict[str, torch.nn.Module],
@@ -568,7 +571,36 @@ def create_pseudo_roc_curve(
     prefetch_factor : int = 2,
     persistent_workers : bool = True,
     pin_memory : bool = True,
-):
+    bins : int | list[float] = 1000,
+    n_total : int = 200
+) -> tuple[np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], int, int]:
+    """
+    Creates a pseudo ROC curve by computing the number of true positives and true negatives for different prediction thresholds, as well as the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
+
+    Arguments:
+    - mc_z_masses_path: A tuple containing the paths to the CSV files with the predicted Z masses for the Monte Carlo (MC) data.
+    - mc_files: A list of paths to the Monte Carlo (MC) H5 files
+    - data_files: A list of paths to the real data H5 files
+    - models: A dictionary containing the PyTorch models used for making predictions. The key "origin" should correspond to the classification model.
+    - device: The device (CPU or GPU) on which the models and data are located
+
+    Keywords:
+    - num_workers: Number of DataLoader worker processes used for reads. Default is 4
+    - prefetch_factor: Number of batches to prefetch for each DataLoader worker. Default is 2.
+    - persistent_workers: Whether to keep DataLoader workers alive after the dataset has been consumed.
+    - pin_memory: Whether to pin memory for DataLoader workers. Default is True.
+    - bins: The number of bins or the bin edges to use for histogramming the predicted Z masses. Default is 1000.
+    - n_total: The number of thresholds to evaluate. Default is 200.
+
+    Returns:
+    - N_tp_mc: An array containing the true number of true positives for each threshold.
+    - N_tn_mc: An array containing the true number of true negatives for each threshold.
+    - N_tp_fit_mc: An array containing the fitted number of true positives for each threshold.
+    - N_tn_fit_mc: An array containing the fitted number of true negatives for each threshold.
+    - N_tp_fit_data: An array containing the fitted number of true positives for each threshold.
+    - N_tn_fit_data: An array containing the fitted number of true negatives for each threshold.
+    """
+    
     dataloader_kwargs = {
         "batch_size": 4096,
         "shuffle": False,
@@ -577,10 +609,47 @@ def create_pseudo_roc_curve(
         "persistent_workers": persistent_workers,
         "pin_memory": pin_memory,
     }
+    print(f"Creating pseudo ROC curve with {n_total} thresholds.")
+    print(f"Getting base truth totals for MC files...")
+    N_tp_mc, N_tn_mc, N_tp_cut, N_tn_cut = _get_truth_totals(mc_files, models["origin"], device, dataloader_kwargs, n_total=n_total)
 
-    N_tp, N_tn, N_tp_cut, N_tn_cut = _get_truth_totals(mc_files, models["Origin"], device, dataloader_kwargs)
+    print(f"Predicting the Z masses for MC and data files...")
+    mc_z_masses = _find_predicted_Z_masses(mc_files, models, device, dataloader_kwargs)
+    data_z_masses = _find_predicted_Z_masses(data_files, models, device, dataloader_kwargs)
 
-    return 0
+    print(f"Histogramming the predicted Z masses for precomputed MC files...")
+    temp_z_masses = np.genfromtxt(mc_z_masses_path[0], delimiter=",")
+    sig_z_mass_hist, _ = np.histogram(temp_z_masses, bins=bins)
+    temp_z_masses = np.genfromtxt(mc_z_masses_path[1], delimiter=",")
+    bkg_z_mass_hist, _ = np.histogram(temp_z_masses, bins=bins)
+
+    print(f"Fitting the MC Z mass distributions...")
+    N_tp_fit_mc, N_tn_fit_mc = _get_totals_from_distribution(
+        mc_files,
+        models["origin"],
+        device,
+        sig_z_mass_hist,
+        bkg_z_mass_hist,
+        mc_z_masses,
+        dataloader_kwargs,
+        bins=bins,
+        n_total=n_total
+    )
+
+    print(f"Fitting the data Z mass distributions...")
+    N_tp_fit_data, N_tn_fit_data = _get_totals_from_distribution(
+        data_files,
+        models["origin"],
+        device,
+        sig_z_mass_hist,
+        bkg_z_mass_hist,
+        data_z_masses,
+        dataloader_kwargs,
+        bins=bins,
+        n_total=n_total
+    )
+    print(f"Pseudo ROC curve creation complete. Returning results.")
+    return N_tp_mc, N_tn_mc, N_tp_fit_mc, N_tn_fit_mc, N_tp_fit_data, N_tn_fit_data, N_tp_cut, N_tn_cut
 
 def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : torch.device, dataloader_kwargs : dict, n_total : int = 200) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
     """
@@ -601,7 +670,7 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
     - N_tp_cut: The number of true positives for the cut threshold.
     - N_tn_cut: The number of true negatives for the cut threshold.
     """
-    mc_dataset = ZPairDataset(mc_files, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], y_source = "egammas", y_fields = ["truthOrigin", "passid_medium"])
+    mc_dataset = ZPairDataset(mc_files, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], y_source = "egammas", y_field = ["truthOrigin", "passid_Medium"])
 
     full_loader = DataLoader(mc_dataset, **dataloader_kwargs)
     target_loader = DataLoader(_TargetOnlyDataset(mc_dataset), **dataloader_kwargs)
@@ -616,6 +685,7 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
     truth = np.concatenate(truth, axis=0) == 13
     truth = truth.reshape(-1, 2)
     truth = truth[:, 0] * truth[:, 1]
+
     pseudo_truth = np.concatenate(pseudo_truth, axis=0)
     pseudo_truth = pseudo_truth.reshape(-1, 2)
     pseudo_truth = pseudo_truth[:, 0] * pseudo_truth[:, 1]
@@ -636,7 +706,7 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
         N_tn[i] = ((1 - truth) * predicted_labels).sum()
     return N_tp, N_tn, N_tp_cut, N_tn_cut
 
-def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Module], device : torch.device) -> np.ndarray:
+def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Module], device : torch.device, dataloader_kwargs : dict) -> np.ndarray:
     """
     Given a model and a data loader, compute the predicted Z boson masses for the input data.
 
@@ -644,14 +714,95 @@ def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Modu
     - model: A PyTorch model used for making predictions.
     - data_loader: A DataLoader that provides the input data for making predictions.
     - device: The device (CPU or GPU) on which the model and data are located.
+    - dataloader_kwargs: A dictionary of keyword arguments to pass to the DataLoader constructor.
 
     Returns:
     - predicted_masses: An array containing the predicted Z boson masses for the input data.
     """
+
     variables = ["pt", "eta", "phi", "e"]
+    prediction_dict = {}
     for var in variables:
-        if var not in models:
+        print(f"Predicting {var} for Z mass calculation...")
+        if var not in models.keys():
             raise ValueError(f"Model for variable '{var}' is missing in the provided models dictionary.")
-        dataset = ZPairDataset(files, )
+        if var in ["pt", "e"]:
+            log_target = True
+        else:
+            log_target = False
+
+        dataset = ZPairDataset(files, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", var], y_source = "truth", y_field = [var], fallback_source = "egammas")
+        loader = DataLoader(dataset, **dataloader_kwargs)
+        prediction_dict[var] = predict(models[var], loader, device, log_target=log_target)
+
+    predicted_masses = []
+    pt1 = prediction_dict["pt"][:, 0]
+    eta1 = prediction_dict["eta"][:, 0]
+    phi1 = prediction_dict["phi"][:, 0]
+    e1 = prediction_dict["e"][:, 0]
+    pt2 = prediction_dict["pt"][:, 2]
+    eta2 = prediction_dict["eta"][:, 2]
+    phi2 = prediction_dict["phi"][:, 2]
+    e2 = prediction_dict["e"][:, 2]
+
+    z_masses = _compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
+    return z_masses
+
+def _get_totals_from_distribution(
+    files_path : list[Path],
+    model : torch.nn.Module,
+    device : torch.device,
+    mc_signal_hist : ArrayLike[np.float64], 
+    mc_background_hist : ArrayLike[np.float64], 
+    data_masses : ArrayLike[np.float64], 
+    dataloader_kwargs : dict,
+    bins : int | list[float] = 1000,
+    n_total : int = 200,
     
-    return np.concatenate(predicted_masses, axis=0)
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
+
+    Arguments:
+    - files_path: A list of paths to the H5 files containing the data.
+    - model: A PyTorch model used for making predictions.
+    - device: The device (CPU or GPU) on which the model and data are located
+    - mc_signal_hist: The Monte Carlo signal histogram.
+    - mc_background_hist: The Monte Carlo background histogram.
+    - data_masses: The Z boson masses from the data.
+    - dataloader_kwargs: A dictionary of keyword arguments to pass to the DataLoader constructor
+
+    Keywords:
+    - bins: The number of bins or the bin edges for the histograms. Default is 1000.
+    - n_total: The number of thresholds to evaluate. Default is 200.
+
+    Returns:
+    - N_tp: An array containing the number of true positives for each threshold.
+    - N_tn: An array containing the number of true negatives for each threshold.
+    """
+    dataset = ZPairDataset(files_path, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], y_source = "egammas", y_field = [])
+    loader = DataLoader(dataset, **dataloader_kwargs)
+    predictions = predict(model, loader, device)
+
+    N_tp = np.zeros(n_total)
+    N_tn = np.zeros(n_total)
+    prediction_values = np.linspace(-10, 10, n_total)
+
+    full_fit_vals = fit_data_to_mc(data_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+    N_bkg = (1.0-full_fit_vals[0]) * len(data_masses)
+
+    for i in range(n_total):
+        predicted_labels = (predictions > prediction_values[i]).astype(bool)
+        z_masses = data_masses[predicted_labels]
+        data_size = len(z_masses)
+        fit_vals = fit_data_to_mc(z_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+        signal_strength = fit_vals[0]
+
+        N_tp[i] =signal_strength * data_size
+        N_fp = (1 - signal_strength) * data_size
+        N_tn[i] = N_bkg - N_fp
+
+    return N_tp, N_tn
+
+
+    

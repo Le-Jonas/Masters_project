@@ -1,6 +1,6 @@
 import h5py
 import numpy as np
-import numpy.typing as npt
+from numpy.typing import ArrayLike
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
@@ -356,7 +356,7 @@ class H5EgammaDataset(Dataset):
             self.handles[file_index] = h5py.File(self.files[file_index], "r")
         return self.handles[file_index]
 
-    def _global_file_index(self, index : int, offsets : npt.ArrayLike | None = None) -> int:
+    def _global_file_index(self, index : int, offsets : ArrayLike | None = None) -> int:
         """
         Find the file index corresponding to a given global index across all files. This method uses the offsets of the dataset to determine which file contains the data for the specified index.
 
@@ -471,7 +471,7 @@ class H5EgammaDataset(Dataset):
             return [name for name in field_names if name in self.include_fields and name not in excluded]
         return [name for name in field_names if name not in excluded]
 
-    def _read_target(self, h5_file : h5py.File, indices : npt.ArrayLike) -> np.ndarray:
+    def _read_target(self, h5_file : h5py.File, indices : ArrayLike) -> np.ndarray:
         """
         Read the target variable from the specified HDF5 file for the given indices. This method retrieves the values of the target variable fields and stacks them into a single array.
 
@@ -642,7 +642,7 @@ class H5EgammaDataset(Dataset):
             )
         return self.eventwise_metadata_cache[file_index]
 
-    def _read_eventwise_rows(self, h5_file : h5py.File, event_indices : npt.ArrayLike) -> np.ndarray:
+    def _read_eventwise_rows(self, h5_file : h5py.File, event_indices : ArrayLike) -> np.ndarray:
         """
         Read the eventwise rows from the specified HDF5 file for the given event indices. This method retrieves the rows corresponding to the specified event indices from the eventwise dataset.
 
@@ -679,7 +679,7 @@ class H5EgammaDataset(Dataset):
     def _read_aligned_rows(
         self,
         h5_file : h5py.File,
-        indices : npt.ArrayLike,
+        indices : ArrayLike,
         include_target : bool = True,
         prefer_contiguous_span : bool = False,
         read_features : bool = True,
@@ -874,9 +874,9 @@ class H5EgammaDataset(Dataset):
         h5_file : h5py.File, 
         local_index : int,
         eventwise : np.ndarray | None = None, 
-        first_indices : npt.ArrayLike | None = None, 
+        first_indices : ArrayLike | None = None, 
         rows : dict | None = None, 
-        target : npt.ArrayLike | None = None, 
+        target : ArrayLike | None = None, 
         eventwise_features : dict | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """

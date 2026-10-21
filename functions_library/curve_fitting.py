@@ -1,15 +1,15 @@
 from iminuit import Minuit
 import numpy as np
-import numpy.typing as npt
+from numpy.typing import ArrayLike
 from scipy.signal import fftconvolve
 
 def fit_function(
-    data : npt.ArrayLike, 
-    bins : int | npt.ArrayLike, 
+    data : ArrayLike, 
+    bins : int | ArrayLike, 
     function : callable, 
-    initial_guess : npt.ArrayLike, 
-    limits : npt.ArrayLike | None = None,
-) -> tuple[npt.ArrayLike, npt.ArrayLike, float]:
+    initial_guess : ArrayLike, 
+    limits : ArrayLike | None = None,
+) -> tuple[ArrayLike, ArrayLike, float]:
     """
     Fit a function to a histogram of data.
 
@@ -83,11 +83,11 @@ def fit_function(
     return np.asarray(minimizer.values), np.asarray(minimizer.errors), minimizer.fval
 
 def fit_data_to_mc(
-    data : npt.ArrayLike,
-    MC_sig : npt.ArrayLike,
-    MC_bkg : npt.ArrayLike,
-    bins : int | npt.ArrayLike,
-    guess_init : float,
+    data : ArrayLike,
+    MC_sig : ArrayLike,
+    MC_bkg : ArrayLike,
+    bins : int | ArrayLike,
+    premade_hists : bool = False,
 ) -> tuple[float, float, float]:
     """
     Fit data to a combination of signal and background Monte Carlo simulations.
@@ -99,17 +99,27 @@ def fit_data_to_mc(
     - bins (int or array-like): The number of bins or the bin edges.
     - guess_init (float): The initial guess for the signal strength.
 
+    Keywords:
+    - premade_hists (bool): Whether the mc arrays are already histograms. Default is False.
+
     Returns:
     - tuple: A tuple containing the fitted parameters, their errors, and the chi-squared value.
     """
+    if premade_hists and bin_edges is None:
+        raise ValueError("bin_edges must be provided if premade_hists is True.")
+    
+    if premade_hists:
+        counts_sig = MC_sig
+        counts_bkg = MC_bkg
+    else:
+        counts_sig, _ = np.histogram(MC_sig, bins=bins)
+        counts_bkg, _ = np.histogram(MC_bkg, bins=bins)
+
     counts_data, bin_edges = np.histogram(data, bins=bins)
     bin_widths = np.diff(bin_edges)
     sample_size_data = counts_data.sum()
     hist_data = counts_data / (sample_size_data * bin_widths)
-    
-    counts_sig, _ = np.histogram(MC_sig, bins=bin_edges)
-    counts_bkg, _ = np.histogram(MC_bkg, bins=bin_edges)
-    
+        
     sample_size_sig = counts_sig.sum()
     sample_size_bkg = counts_bkg.sum()
     
@@ -136,7 +146,7 @@ def fit_data_to_mc(
 
     minimizer = Minuit(
         _chi2_sig_frac,
-        guess_init,
+        0.5,
         name=("sig_frac",),
     )
     minimizer.errordef = Minuit.LEAST_SQUARES
@@ -150,7 +160,7 @@ def fit_data_to_mc(
 
     return float(minimizer.values[0]), float(minimizer.errors[0]), float(minimizer.fval)
 
-def gaussian(x : npt.ArrayLike, mean : float, stddev : float) -> npt.ArrayLike:
+def gaussian(x : ArrayLike, mean : float, stddev : float) -> ArrayLike:
     """
     Normalized Gaussian distribution.
 
@@ -168,7 +178,7 @@ def gaussian(x : npt.ArrayLike, mean : float, stddev : float) -> npt.ArrayLike:
 
 
 
-def crystal_ball_left(x : npt.ArrayLike, mean : float, stddev : float, alpha : float, n : float) -> npt.ArrayLike:
+def crystal_ball_left(x : ArrayLike, mean : float, stddev : float, alpha : float, n : float) -> ArrayLike:
     """
     Crystal Ball shape with a power-law tail on the low-x side.
 
@@ -200,7 +210,7 @@ def crystal_ball_left(x : npt.ArrayLike, mean : float, stddev : float, alpha : f
 
 
 
-def breit_wigner(x : npt.ArrayLike, mass : float, width : float) -> npt.ArrayLike:
+def breit_wigner(x : ArrayLike, mass : float, width : float) -> ArrayLike:
     """
     Normalized non-relativistic Breit-Wigner distribution.
 
@@ -217,7 +227,7 @@ def breit_wigner(x : npt.ArrayLike, mass : float, width : float) -> npt.ArrayLik
         (x - mass) ** 2 + half_width ** 2
     )
 
-def exponential_decay(x : npt.ArrayLike, amplitude : float, decay_constant : float) -> npt.ArrayLike:
+def exponential_decay(x : ArrayLike, amplitude : float, decay_constant : float) -> ArrayLike:
     """
     Exponential decay function.
 
@@ -232,14 +242,14 @@ def exponential_decay(x : npt.ArrayLike, amplitude : float, decay_constant : flo
     return amplitude * np.exp(-decay_constant * x)
 
 def breit_wigner_crystal_ball(
-    x : npt.ArrayLike, 
+    x : ArrayLike, 
     amplitude : float, 
     mean_bw : float, 
     width_bw : float, 
     sigma_cb : float, 
     alpha_cb : float, 
     n_cb : float,
-) -> npt.ArrayLike:
+) -> ArrayLike:
     """
     Breit-Wigner convolved with a low-mass Crystal Ball response.
 
@@ -278,14 +288,14 @@ def breit_wigner_crystal_ball(
 
 
 def crystal_ball_double(
-    x : npt.ArrayLike, 
+    x : ArrayLike, 
     mean : float, 
     stddev : float, 
     alpha_left : float, 
     n_left : float, 
     alpha_right : float, 
     n_right : float,
-) -> npt.ArrayLike:
+) -> ArrayLike:
     """
     Crystal Ball shape with independent low- and high-x power-law tails.
     
@@ -328,7 +338,7 @@ def crystal_ball_double(
 
 
 def true_data_fit(
-    x : npt.ArrayLike, 
+    x : ArrayLike, 
     amplitude_sig : float, 
     amplitude_bkg : float, 
     mean_bw : float, 
@@ -337,7 +347,7 @@ def true_data_fit(
     alpha_cb : float, 
     n_cb : float, 
     decay_constant : float,
-) -> npt.ArrayLike:
+) -> ArrayLike:
     """
     Function that combines a Breit-Wigner convolved with a Crystal Ball function and an exponential decay function, weighted by their respective amplitudes.
 
