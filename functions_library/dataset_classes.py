@@ -682,6 +682,7 @@ class H5EgammaDataset(Dataset):
         indices : npt.ArrayLike,
         include_target : bool = True,
         prefer_contiguous_span : bool = False,
+        read_features : bool = True,
     ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
         """
         Read aligned rows from the specified HDF5 file for the given indices. This method attempts to read the rows in a few contiguous slices if possible, otherwise it reads them individually. It returns the rows and the sort order of the indices.
@@ -691,6 +692,7 @@ class H5EgammaDataset(Dataset):
         - indices (array-like): The indices of the rows to read.
         - include_target (bool, optional): Whether to include the target values in the returned data.
         - prefer_contiguous_span (bool, optional): Whether to prefer reading contiguous spans of rows.
+        - read_features (bool, optional): Whether to read feature rows. Set to False for target-only reads.
 
         Returns:
         - tuple: A tuple containing the rows, target values, and the sort order of the indices.
@@ -712,10 +714,14 @@ class H5EgammaDataset(Dataset):
             relative_indices = sorted_indices - first
             span_size = last - first
             if span_size <= max(len(sorted_indices) * 4, len(sorted_indices) + 32):
-                rows = {
-                    name: h5_file[name][first:last][relative_indices]
-                    for name in self.features
-                }
+                rows = (
+                    {
+                        name: h5_file[name][first:last][relative_indices]
+                        for name in self.features
+                    }
+                    if read_features
+                    else {}
+                )
                 if not include_target or not target_fields:
                     target = np.empty(
                         (len(sorted_indices), 0), dtype=np.float32
@@ -757,7 +763,11 @@ class H5EgammaDataset(Dataset):
                     axis=-1,
                 )
             return (
-                {name: h5_file[name][sorted_indices] for name in self.features},
+                (
+                    {name: h5_file[name][sorted_indices] for name in self.features}
+                    if read_features
+                    else {}
+                ),
                 target,
                 sort_order,
             )
@@ -776,10 +786,19 @@ class H5EgammaDataset(Dataset):
                     ],
                     axis=-1,
                 )
-            return {name: h5_file[name][sorted_indices] for name in self.features}, target, sort_order
+            return (
+                {
+                    name: h5_file[name][sorted_indices]
+                    for name in self.features
+                }
+                if read_features
+                else {},
+                target,
+                sort_order,
+            )
 
         #This part takes care of the contigous reads. Reading a batch of 32 rows in one go reduces computation from 8s to 0.2s
-        rows = {name: [] for name in self.features}
+        rows = {name: [] for name in self.features} if read_features else {}
         target = []
         for start, end in zip(run_starts, run_ends):
             first = int(sorted_indices[start])
@@ -789,11 +808,12 @@ class H5EgammaDataset(Dataset):
                 relative_indices,
                 np.arange(len(relative_indices), dtype=np.int64),
             )
-            for name in self.features:
-                if contiguous:
-                    rows[name].append(h5_file[name][first:last])
-                else:
-                    rows[name].append(h5_file[name][first:last][relative_indices])
+            if read_features:
+                for name in self.features:
+                    if contiguous:
+                        rows[name].append(h5_file[name][first:last])
+                    else:
+                        rows[name].append(h5_file[name][first:last][relative_indices])
             if include_target and target_fields and self.y_source != "eventwise":
                 if contiguous:
                     target.append(
@@ -816,10 +836,37 @@ class H5EgammaDataset(Dataset):
                         )
                     )
         if not include_target or not target_fields:
-            return {name: np.concatenate(rows[name]) for name in self.features}, np.empty((len(sorted_indices), 0), dtype=np.float32), sort_order
+            return (
+                {
+                    name: np.concatenate(rows[name])
+                    for name in self.features
+                }
+                if read_features
+                else {},
+                np.empty((len(sorted_indices), 0), dtype=np.float32),
+                sort_order,
+            )
         if self.y_source == "eventwise":
-            return {name: np.concatenate(rows[name]) for name in self.features}, [None]*len(sorted_indices), sort_order
-        return {name: np.concatenate(rows[name]) for name in self.features}, np.concatenate(target), sort_order
+            return (
+                {
+                    name: np.concatenate(rows[name])
+                    for name in self.features
+                }
+                if read_features
+                else {},
+                [None] * len(sorted_indices),
+                sort_order,
+            )
+        return (
+            {
+                name: np.concatenate(rows[name])
+                for name in self.features
+            }
+            if read_features
+            else {},
+            np.concatenate(target),
+            sort_order,
+        )
 
     #This function groups a single data row into a torch tensor of features and a torch tensor of the target variable. It can also read the h5 file if no data is set yet.
     def _read_one(
@@ -927,7 +974,12 @@ class H5EgammaDataset(Dataset):
         return features, eventwise_features, target, domain_target
 
     #Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs.
-    def __getitems__(self, indices : list[int], include_target : bool = True) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    def __getitems__(
+        self,
+        indices : list[int],
+        include_target : bool = True,
+        target_only : bool = False,
+    ) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] | list[torch.Tensor]:
         """
         Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs.
 
@@ -936,6 +988,7 @@ class H5EgammaDataset(Dataset):
 
         Keywords:
         - include_target (bool): Whether to include the target variable in the output.
+        - target_only (bool): Whether to return only targets and skip feature reads.
 
         Returns:
         - list: A list of tuples containing the torch tensors for features, eventwise features, and target variable.
@@ -976,10 +1029,46 @@ class H5EgammaDataset(Dataset):
             rows, target, sort_order = self._read_aligned_rows(
                 h5_file,
                 local_indices,
-                include_target=include_target,
+                include_target=True if target_only else include_target,
+                read_features=not target_only,
             )
             sorted_indices = np.sort(local_indices)
             event_indices = np.searchsorted(first_indices, sorted_indices, side="right") - 1
+            if target_only:
+                if self.y_source == "eventwise":
+                    target_source, target_fields = _resolve_target_source_and_fields(
+                        h5_file,
+                        self.y_source,
+                        self.y_fields,
+                        self.fallback_source,
+                        self.fallback_field,
+                    )
+                    if target_source == "eventwise" and target_fields:
+                        eventwise_rows = self._read_eventwise_rows(
+                            h5_file, np.unique(event_indices)
+                        )
+                        eventwise_targets = {
+                            int(event_index): np.asarray(
+                                [
+                                    eventwise_rows[position][field]
+                                    for field in target_fields
+                                ],
+                                dtype=np.float32,
+                            )
+                            for position, event_index in enumerate(np.unique(event_indices))
+                        }
+                        target = np.stack(
+                            [
+                                eventwise_targets[int(event_index)]
+                                for event_index in event_indices
+                            ],
+                            axis=0,
+                        )
+                for sorted_position, original_position in enumerate(np.argsort(sort_order)):
+                    batch[positions[original_position][0]] = torch.from_numpy(
+                        np.asarray(target[sorted_position], dtype=np.float32)
+                    )
+                continue
             unique_event_indices = np.unique(event_indices)
             eventwise_rows = self._read_eventwise_rows(h5_file, unique_event_indices)
             cached_eventwise_features = {
@@ -1191,12 +1280,19 @@ class ZPairDataset(H5EgammaDataset):
             ),
         )
 
-    def __getitems__(self, indices : list[int]) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    def __getitems__(
+        self,
+        indices : list[int],
+        target_only : bool = False,
+    ) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] | list[torch.Tensor]:
         """
         Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs for each lepton pair.
 
         Arguments:
         - indices (list): The global indices of the pairs to retrieve.
+
+        Keywords:
+        - target_only (bool): Whether to return only pair targets and skip feature reads.
 
         Returns:
         - list: A list of tuples containing the torch tensors for the features of both leptons, eventwise features, and target variable for each pair.
@@ -1241,7 +1337,51 @@ class ZPairDataset(H5EgammaDataset):
                 unique_rows,
                 include_target=True,
                 prefer_contiguous_span=True,
+                read_features=not target_only,
             )
+
+            if target_only and self.y_source == "eventwise":
+                target_source, target_fields = _resolve_target_source_and_fields(
+                    h5_file,
+                    self.y_source,
+                    self.y_fields,
+                    self.fallback_source,
+                    self.fallback_field,
+                )
+                if target_source == "eventwise" and target_fields:
+                    row_event_indices = np.searchsorted(
+                        first_indices, unique_rows, side="right"
+                    ) - 1
+                    eventwise_rows = self._read_eventwise_rows(
+                        h5_file, np.unique(row_event_indices)
+                    )
+                    eventwise_targets = {
+                        int(event_index): np.asarray(
+                            [
+                                eventwise_rows[position][field]
+                                for field in target_fields
+                            ],
+                            dtype=np.float32,
+                        )
+                        for position, event_index in enumerate(np.unique(row_event_indices))
+                    }
+                    targets = np.stack(
+                        [
+                            eventwise_targets[int(event_index)]
+                            for event_index in row_event_indices
+                        ],
+                        axis=0,
+                    )
+
+            first_positions = np.searchsorted(unique_rows, pair_rows[:, 0])
+            second_positions = np.searchsorted(unique_rows, pair_rows[:, 1])
+            pair_targets = torch.from_numpy(
+                np.stack((targets[first_positions], targets[second_positions]), axis=1)
+            )
+            if target_only:
+                for batch_position, output_position in enumerate(output_positions):
+                    batch[output_position] = pair_targets[batch_position]
+                continue
 
             # Flatten all selected structured fields in one vectorized pass.
             # This avoids calling _read_one once per unique electron row.
@@ -1300,14 +1440,9 @@ class ZPairDataset(H5EgammaDataset):
                     axis=-1,
                 )
 
-            first_positions = np.searchsorted(unique_rows, pair_rows[:, 0])
-            second_positions = np.searchsorted(unique_rows, pair_rows[:, 1])
             first_features = torch.from_numpy(electron_features[first_positions])
             second_features = torch.from_numpy(electron_features[second_positions])
             pair_eventwise = torch.from_numpy(eventwise_features[pair_event_indices])
-            pair_targets = torch.from_numpy(
-                np.stack((targets[first_positions], targets[second_positions]), axis=1)
-            )
 
             for batch_position, output_position in enumerate(output_positions):
                 batch[output_position] = (

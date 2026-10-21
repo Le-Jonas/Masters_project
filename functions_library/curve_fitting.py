@@ -4,10 +4,10 @@ import numpy.typing as npt
 from scipy.signal import fftconvolve
 
 def fit_function(
-    data: npt.ArrayLike, 
-    bins: int | npt.ArrayLike, 
-    function: callable, 
-    initial_guess: npt.ArrayLike, 
+    data : npt.ArrayLike, 
+    bins : int | npt.ArrayLike, 
+    function : callable, 
+    initial_guess : npt.ArrayLike, 
     limits : npt.ArrayLike | None = None,
 ) -> tuple[npt.ArrayLike, npt.ArrayLike, float]:
     """
@@ -82,6 +82,74 @@ def fit_function(
 
     return np.asarray(minimizer.values), np.asarray(minimizer.errors), minimizer.fval
 
+def fit_data_to_mc(
+    data : npt.ArrayLike,
+    MC_sig : npt.ArrayLike,
+    MC_bkg : npt.ArrayLike,
+    bins : int | npt.ArrayLike,
+    guess_init : float,
+) -> tuple[float, float, float]:
+    """
+    Fit data to a combination of signal and background Monte Carlo simulations.
+
+    Arguments:
+    - data (array-like): The data to fit.
+    - MC_sig (array-like): The signal Monte Carlo simulation.
+    - MC_bkg (array-like): The background Monte Carlo simulation.
+    - bins (int or array-like): The number of bins or the bin edges.
+    - guess_init (float): The initial guess for the signal strength.
+
+    Returns:
+    - tuple: A tuple containing the fitted parameters, their errors, and the chi-squared value.
+    """
+    counts_data, bin_edges = np.histogram(data, bins=bins)
+    bin_widths = np.diff(bin_edges)
+    sample_size_data = counts_data.sum()
+    hist_data = counts_data / (sample_size_data * bin_widths)
+    
+    counts_sig, _ = np.histogram(MC_sig, bins=bin_edges)
+    counts_bkg, _ = np.histogram(MC_bkg, bins=bin_edges)
+    
+    sample_size_sig = counts_sig.sum()
+    sample_size_bkg = counts_bkg.sum()
+    
+    hist_sig = counts_sig / (sample_size_sig * bin_widths)
+    hist_bkg = counts_bkg / (sample_size_bkg * bin_widths)
+
+    data_err = np.sqrt(counts_data) / (sample_size_data * bin_widths)
+
+    valid = counts_data > 0
+
+    def _chi2_sig_frac(sig_frac):
+        """
+        Calculate the chi-squared value for the fit of data to a combination of signal and background.
+
+        Arguments:
+        - sig_frac (float): The fraction of signal in the combined model.
+
+        Returns:
+        - float: The chi-squared value.
+        """
+        expected = sig_frac * hist_sig + (1.0 - sig_frac) * hist_bkg
+        residuals = (hist_data[valid] - expected[valid]) / data_err[valid]
+        return np.sum(residuals ** 2)
+
+    minimizer = Minuit(
+        _chi2_sig_frac,
+        guess_init,
+        name=("sig_frac",),
+    )
+    minimizer.errordef = Minuit.LEAST_SQUARES
+    minimizer.limits = [(0.0, 1.0)]
+    minimizer.migrad(ncall=10000)
+
+    if minimizer.fmin.is_above_max_edm or minimizer.fmin.has_reached_call_limit:
+        raise RuntimeError(
+            f"Minuit failed to find a minimum: {minimizer.fmin}"
+        )
+
+    return float(minimizer.values[0]), float(minimizer.errors[0]), float(minimizer.fval)
+
 def gaussian(x : npt.ArrayLike, mean : float, stddev : float) -> npt.ArrayLike:
     """
     Normalized Gaussian distribution.
@@ -114,6 +182,7 @@ def crystal_ball_left(x : npt.ArrayLike, mean : float, stddev : float, alpha : f
     Returns:
     - array-like: The values of the Crystal Ball function at the input values.
     """
+    x = np.asarray(x, dtype=float)
     z = (x - mean) / stddev
     alpha = abs(alpha)
 
@@ -124,7 +193,8 @@ def crystal_ball_left(x : npt.ArrayLike, mean : float, stddev : float, alpha : f
     shape = np.empty_like(z, dtype=float)
     gaussian_mask = z > -alpha
     shape[gaussian_mask] = np.exp(-z[gaussian_mask] ** 2 / 2)
-    shape[~gaussian_mask] = A * tail_base[~gaussian_mask] ** (-n)
+    non_gaussian_mask = np.logical_not(gaussian_mask)
+    shape[non_gaussian_mask] = A * tail_base[non_gaussian_mask] ** (-n)
 
     return shape / (np.sqrt(2 * np.pi) * stddev)
 

@@ -4,7 +4,8 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from pathlib import Path
 
-from .dataset_classes import H5EgammaDataset
+from .model_training import predict
+from .dataset_classes import H5EgammaDataset, ZPairDataset
 
 
 class _FeatureOnlyDataset(Dataset):
@@ -21,6 +22,21 @@ class _FeatureOnlyDataset(Dataset):
 
     def __getitems__(self, indices : list[int]) -> list[tuple[torch.Tensor, torch.Tensor]]:
         return self.dataset.__getitems__(indices, include_target=False)
+
+class _TargetOnlyDataset(Dataset):
+    """Expose target-only batched reads to DataLoader workers."""
+
+    def __init__(self, dataset : Dataset):
+        self.dataset = dataset
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, index : int) -> torch.Tensor:
+        return self.dataset[index][2]
+
+    def __getitems__(self, indices : list[int]) -> list[torch.Tensor]:
+        return self.dataset.__getitems__(indices, target_only=True)
 
 def _h5_files_from_path(path : str | Path) -> list[Path]:
     """
@@ -542,3 +558,100 @@ def angular_difference(predicted : torch.Tensor, target : torch.Tensor) -> torch
         torch.sin(predicted - target),
         torch.cos(predicted - target),
     )
+
+def create_pseudo_roc_curve(
+    mc_files : list[Path],
+    data_files : list[Path],
+    models : dict[str, torch.nn.Module],
+    device : torch.device,
+    num_workers : int = 4,
+    prefetch_factor : int = 2,
+    persistent_workers : bool = True,
+    pin_memory : bool = True,
+):
+    dataloader_kwargs = {
+        "batch_size": 4096,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "prefetch_factor": prefetch_factor,
+        "persistent_workers": persistent_workers,
+        "pin_memory": pin_memory,
+    }
+
+    N_tp, N_tn, N_tp_cut, N_tn_cut = _get_truth_totals(mc_files, models["Origin"], device, dataloader_kwargs)
+
+    return 0
+
+def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : torch.device, dataloader_kwargs : dict, n_total : int = 200) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
+    """
+    Given a model, a full data loader, and a target data loader, compute the total number of true positives and true negatives for different prediction thresholds and the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
+
+    Arguments:
+    - model: A PyTorch model used for making predictions.
+    - full_loader: A DataLoader that provides the full dataset for making predictions.
+    - target_loader: A DataLoader that provides the target labels for computing true positives and true negatives.
+    - device: The device (CPU or GPU) on which the model and data are located.
+
+    Keywords:
+    - n_total: The number of thresholds to evaluate. Default is 200.
+
+    Returns:
+    - N_tp: An array containing the number of true positives for each threshold.
+    - N_tn: An array containing the number of true negatives for each threshold.
+    - N_tp_cut: The number of true positives for the cut threshold.
+    - N_tn_cut: The number of true negatives for the cut threshold.
+    """
+    mc_dataset = ZPairDataset(mc_files, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], y_source = "egammas", y_fields = ["truthOrigin", "passid_medium"])
+
+    full_loader = DataLoader(mc_dataset, **dataloader_kwargs)
+    target_loader = DataLoader(_TargetOnlyDataset(mc_dataset), **dataloader_kwargs)
+
+    truth = []
+    pseudo_truth = []
+
+    for targets in target_loader:
+        truth.append(targets[:,0])
+        pseudo_truth.append(targets[:,1])
+
+    truth = np.concatenate(truth, axis=0) == 13
+    truth = truth.reshape(-1, 2)
+    truth = truth[:, 0] * truth[:, 1]
+    pseudo_truth = np.concatenate(pseudo_truth, axis=0)
+    pseudo_truth = pseudo_truth.reshape(-1, 2)
+    pseudo_truth = pseudo_truth[:, 0] * pseudo_truth[:, 1]
+
+    predictions = predict(model, full_loader, device=device)
+
+
+    cut_labels = (pseudo_truth > 0.5)
+    N_tp_cut = (truth * cut_labels).sum()
+    N_tn_cut = ((1 - truth) * cut_labels).sum()
+        
+    N_tp = np.zeros(n_total)
+    N_tn = np.zeros(n_total)
+    prediction_values = np.linspace(-10, 10, n_total)
+    for i in range(n_total):
+        predicted_labels = (predictions > prediction_values[i]).astype(bool)
+        N_tp[i] = (truth * predicted_labels).sum()
+        N_tn[i] = ((1 - truth) * predicted_labels).sum()
+    return N_tp, N_tn, N_tp_cut, N_tn_cut
+
+def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Module], device : torch.device) -> np.ndarray:
+    """
+    Given a model and a data loader, compute the predicted Z boson masses for the input data.
+
+    Arguments:
+    - model: A PyTorch model used for making predictions.
+    - data_loader: A DataLoader that provides the input data for making predictions.
+    - device: The device (CPU or GPU) on which the model and data are located.
+
+    Returns:
+    - predicted_masses: An array containing the predicted Z boson masses for the input data.
+    """
+    variables = ["pt", "eta", "phi", "e"]
+    for var in variables:
+        if var not in models:
+            raise ValueError(f"Model for variable '{var}' is missing in the provided models dictionary.")
+        dataset = ZPairDataset(files, )
+    
+    return np.concatenate(predicted_masses, axis=0)

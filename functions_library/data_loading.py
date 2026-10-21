@@ -5,6 +5,7 @@ from pathlib import Path
 from . import dataset_classes as _class_
 from . import misc_functions as _misc_
 import time
+import numpy.typing as npt
 
 class ShuffledContiguousBatchSampler(Sampler):
     """
@@ -315,3 +316,31 @@ def h5_to_npy(h5_file_path : str | Path,
     del output
     dataset.close()
     return 1
+
+def create_path_lists(paths : list[str], outputs : list[str] | None = None, seed : int = 0, mixing_list : list[tuple[int, int]] | None = None) -> tuple[list[Path], list[Path]]:
+    rng = np.random.default_rng(seed=seed)
+
+    path_num = len(paths)
+
+    path_dir = {}
+    for i, path in enumerate(paths):
+        if outputs is None:
+            name = path
+        else:
+            name = outputs[i]
+        path_dir[name] = _misc_._h5_files_from_path(path)
+
+    if mixing_list is not None:
+        for i, mix_tuple in enumerate(mixing_list):
+            idx1, idx2 = mix_tuple[0], mix_tuple[1]
+            if outputs is None:
+                name1, name2 = paths[idx1], paths[idx2]
+                comb_name = f"{name1}_{name2}"
+            else:
+                name1, name2 = outputs[idx1], outputs[idx2]
+                comb_name = outputs[path_num + i]
+            temp_list = path_dir[name1] + path_dir[name2]
+            rng.shuffle(temp_list)
+            path_dir[comb_name] = temp_list
+
+    return path_dir
