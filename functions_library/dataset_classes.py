@@ -23,14 +23,15 @@ def _resolve_target_source_and_fields(
         available_fields = h5_file[y_source].dtype.names
         if all(field in available_fields for field in y_fields):
             return y_source, y_fields
+        if fallback_field:
+            if all(field in available_fields for field in fallback_field):
+                return y_source, fallback_field
     if fallback_source and fallback_source in h5_file:
         fallback_available_fields = h5_file[fallback_source].dtype.names
+        if all(field in fallback_available_fields for field in y_fields):
+            return fallback_source, y_fields
         if fallback_field and all(field in fallback_available_fields for field in fallback_field):
             return fallback_source, fallback_field
-    if y_source in h5_file and fallback_field:
-        available_fields = h5_file[y_source].dtype.names
-        if all(field in available_fields for field in fallback_field):
-            return y_source, fallback_field
     raise KeyError(
         f"Neither target fields {y_fields} nor fallback fields "
         f"{fallback_field} are available in {y_source} nor {fallback_source}"
@@ -713,7 +714,7 @@ class H5EgammaDataset(Dataset):
             last = int(sorted_indices[-1]) + 1
             relative_indices = sorted_indices - first
             span_size = last - first
-            if span_size <= max(len(sorted_indices) * 4, len(sorted_indices) + 32):
+            if span_size <= max(len(sorted_indices) * 8, len(sorted_indices) + 1024):
                 rows = (
                     {
                         name: h5_file[name][first:last][relative_indices]
@@ -732,7 +733,9 @@ class H5EgammaDataset(Dataset):
                     target = np.stack(
                         [
                             np.asarray(
-                                h5_file[target_source][field][sorted_indices],
+                                h5_file[target_source][field][first:last][
+                                    relative_indices
+                                ],
                                 dtype=np.float32,
                             )
                             for field in target_fields
@@ -740,6 +743,8 @@ class H5EgammaDataset(Dataset):
                         axis=-1,
                     )
                 return rows, target, sort_order
+            else:
+                print("Warning: Contiguous span of rows is too large, reverting to individual reads. This is excrutiatingly slow and should be avoided. Consider using a smaller batch size or filtering the dataset to reduce the number of rows read at once.")
 
         runs = np.flatnonzero(np.diff(sorted_indices) > 1) + 1
         run_starts = np.r_[0, runs]
@@ -993,6 +998,9 @@ class H5EgammaDataset(Dataset):
         Returns:
         - list: A list of tuples containing the torch tensors for features, eventwise features, and target variable.
         """
+        include_target = include_target and not getattr(
+            self, "skip_target_reads", False
+        )
         indices = list(indices)
         grouped = {}
         for output_position, index in enumerate(indices):
@@ -1297,6 +1305,7 @@ class ZPairDataset(H5EgammaDataset):
         Returns:
         - list: A list of tuples containing the torch tensors for the features of both leptons, eventwise features, and target variable for each pair.
         """
+        skip_target_reads = getattr(self, "skip_target_reads", False)
         indices = list(indices)
         global_indices = np.asarray(indices, dtype=np.int64)
         file_indices = np.searchsorted(
@@ -1308,34 +1317,28 @@ class ZPairDataset(H5EgammaDataset):
             for file_index in np.unique(file_indices)
         }
 
-        if not hasattr(self, "eventwise_cache"):
-            self.eventwise_cache = {}
-        if not hasattr(self, "eventwise_features_cache"):
-            self.eventwise_features_cache = {}
-
-
         batch = [None] * len(indices)
         for file_index, output_positions in grouped.items():
             h5_file = self._get_handle(file_index)
-            if file_index not in self.eventwise_cache:
-                self.eventwise_cache[file_index] = h5_file["eventwise"][:]
-            eventwise = self.eventwise_cache[file_index]
-            if file_index not in self.eventwise_features_cache:
-                self.eventwise_features_cache[file_index] = None
-            eventwise_features = self.eventwise_features_cache[file_index]
-            first_indices = self._get_eventwise_first_indices(
-                file_index, h5_file, eventwise
-            )
+            first_indices, _, _ = self._get_eventwise_metadata(file_index, h5_file)
 
             pair_rows = self.pair_rows[file_index][local_pair_indices[output_positions]]
             pair_event_indices = self.pair_event_indices[file_index][
                 local_pair_indices[output_positions]
             ]
+            unique_event_indices = np.unique(pair_event_indices)
+            eventwise_rows = self._read_eventwise_rows(
+                h5_file, unique_event_indices
+            )
+            eventwise_features = self._eventwise_feature_matrix(eventwise_rows)
+            pair_event_positions = np.searchsorted(
+                unique_event_indices, pair_event_indices
+            )
             unique_rows = np.unique(pair_rows)
             rows, targets, _ = self._read_aligned_rows(
                 h5_file,
                 unique_rows,
-                include_target=True,
+                include_target=not skip_target_reads,
                 prefer_contiguous_span=True,
                 read_features=not target_only,
             )
@@ -1406,22 +1409,6 @@ class ZPairDataset(H5EgammaDataset):
                 first_indices, unique_rows, side="right"
             ) - 1
 
-            if eventwise_features is None:
-                eventwise_rows = eventwise
-                eventwise_names = self._selected_field_names(
-                    "eventwise", eventwise_rows.dtype.names
-                )
-                eventwise_features = np.concatenate(
-                    [
-                        np.asarray(eventwise_rows[field], dtype=np.float32).reshape(
-                            len(eventwise_rows), -1
-                        )
-                        for field in eventwise_names
-                    ],
-                    axis=1,
-                )
-                self.eventwise_features_cache[file_index] = eventwise_features
-
             target_source, target_fields = _resolve_target_source_and_fields(
                 h5_file,
                 self.y_source,
@@ -1429,11 +1416,16 @@ class ZPairDataset(H5EgammaDataset):
                 self.fallback_source,
                 self.fallback_field,
             )
-            if target_source == "eventwise" and target_fields:
+            if not skip_target_reads and target_source == "eventwise" and target_fields:
                 targets = np.stack(
                     [
                         np.asarray(
-                            eventwise[field][row_event_indices], dtype=np.float32
+                            eventwise_rows[
+                                np.searchsorted(
+                                    unique_event_indices, row_event_indices
+                                )
+                            ][field],
+                            dtype=np.float32,
                         )
                         for field in target_fields
                     ],
@@ -1442,7 +1434,9 @@ class ZPairDataset(H5EgammaDataset):
 
             first_features = torch.from_numpy(electron_features[first_positions])
             second_features = torch.from_numpy(electron_features[second_positions])
-            pair_eventwise = torch.from_numpy(eventwise_features[pair_event_indices])
+            pair_eventwise = torch.from_numpy(
+                eventwise_features[pair_event_positions]
+            )
 
             for batch_position, output_position in enumerate(output_positions):
                 batch[output_position] = (

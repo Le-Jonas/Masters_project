@@ -9,6 +9,7 @@ from .model_training import predict
 from .dataset_classes import H5EgammaDataset, ZPairDataset
 from .curve_fitting import fit_data_to_mc
 
+from __future__ import annotations #Helps oskar because he lives in 1978
 
 class _FeatureOnlyDataset(Dataset):
     """Expose feature-only batched reads to DataLoader workers."""
@@ -58,7 +59,7 @@ def _h5_files_from_path(path : str | Path) -> list[Path]:
         return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
     raise FileNotFoundError(f"H5 path does not exist: {path}")
 
-def _compute_Z_mass(pt1 : float, eta1 : float, phi1 : float, e1 : float, pt2 : float, eta2 : float, phi2 : float, e2 : float) -> float:
+def _compute_Z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndarray[np.float64], phi1 : float | np.ndarray[np.float64], e1 : float | np.ndarray[np.float64], pt2 : float | np.ndarray[np.float64], eta2 : float | np.ndarray[np.float64], phi2 : float | np.ndarray[np.float64], e2 : float | np.ndarray[np.float64]) -> float | np.ndarray[np.float64]:
     """
     Given the transverse momentum (pt), pseudorapidity (eta), azimuthal angle (phi), and energy (e) of two particles, compute the invariant mass of the Z boson formed by these two particles.
 
@@ -106,6 +107,173 @@ def _selected_rows_for_files(h5_files : list[Path], mix_files : str | Path | lis
     valid_rows = dataset.valid_rows
     dataset.close()
     return files, valid_rows
+
+def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : torch.device, dataloader_kwargs : dict, n_total : int = 200) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
+    """
+    Given a model, a full data loader, and a target data loader, compute the total number of true positives and true negatives for different prediction thresholds and the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
+
+    Arguments:
+    - model: A PyTorch model used for making predictions.
+    - full_loader: A DataLoader that provides the full dataset for making predictions.
+    - target_loader: A DataLoader that provides the target labels for computing true positives and true negatives.
+    - device: The device (CPU or GPU) on which the model and data are located.
+
+    Keywords:
+    - n_total: The number of thresholds to evaluate. Default is 200.
+
+    Returns:
+    - N_tp: An array containing the number of true positives for each threshold.
+    - N_tn: An array containing the number of true negatives for each threshold.
+    - N_tp_cut: The number of true positives for the cut threshold.
+    - N_tn_cut: The number of true negatives for the cut threshold.
+    """
+    mc_dataset_mean = H5EgammaDataset(mc_files, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], y_field = None)
+    means, stds = compute_mean_std(mc_dataset_mean, sample_size=100_000, batch_size=4096, num_workers=dataloader_kwargs["num_workers"], pin_memory=dataloader_kwargs["pin_memory"], persistent_workers=dataloader_kwargs["persistent_workers"])
+    mc_dataset_mean.close()
+
+    mc_dataset = ZPairDataset(mc_files, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], y_source = "egammas", y_field = ["truthOrigin", "passid_Medium"])
+
+    full_loader = DataLoader(mc_dataset, **dataloader_kwargs)
+    target_loader = DataLoader(_TargetOnlyDataset(mc_dataset), **dataloader_kwargs)
+
+    truth = []
+    pseudo_truth = []
+
+    for targets in target_loader:
+        truth.append(targets[:,0])
+        pseudo_truth.append(targets[:,1])
+
+    truth = np.concatenate(truth, axis=0) == 13
+    truth = truth.reshape(-1, 2)
+    truth = truth[:, 0] * truth[:, 1]
+
+    pseudo_truth = np.concatenate(pseudo_truth, axis=0)
+    pseudo_truth = pseudo_truth.reshape(-1, 2)
+    pseudo_truth = pseudo_truth[:, 0] * pseudo_truth[:, 1]
+
+    predictions = predict(model, full_loader, device=device, means=means, stds=stds)
+    mc_dataset.close()
+
+
+    cut_labels = (pseudo_truth > 0.5)
+    N_tp_cut = (truth * cut_labels).sum()
+    N_tn_cut = ((1 - truth) * cut_labels).sum()
+        
+    N_tp = np.zeros(n_total)
+    N_tn = np.zeros(n_total)
+    prediction_values = np.linspace(-10, 10, n_total)
+    for i in range(n_total):
+        predicted_labels = (predictions > prediction_values[i]).astype(bool)
+        N_tp[i] = (truth * predicted_labels).sum()
+        N_tn[i] = ((1 - truth) * predicted_labels).sum()
+    return N_tp, N_tn, N_tp_cut, N_tn_cut
+
+def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Module], device : torch.device, dataloader_kwargs : dict) -> np.ndarray:
+    """
+    Given a model and a data loader, compute the predicted Z boson masses for the input data.
+
+    Arguments:
+    - model: A PyTorch model used for making predictions.
+    - data_loader: A DataLoader that provides the input data for making predictions.
+    - device: The device (CPU or GPU) on which the model and data are located.
+    - dataloader_kwargs: A dictionary of keyword arguments to pass to the DataLoader constructor.
+
+    Returns:
+    - predicted_masses: An array containing the predicted Z boson masses for the input data.
+    """
+
+    variables = ["pt", "eta", "phi", "e"]
+    prediction_dict = {}
+    for var in variables:
+        print(f"Predicting {var} for Z mass calculation...")
+        if var not in models.keys():
+            raise ValueError(f"Model for variable '{var}' is missing in the provided models dictionary.")
+        if var in ["pt", "e"]:
+            log_target = True
+        else:
+            log_target = False
+
+        dataset_mean = H5EgammaDataset(files, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", var], y_field = None)
+        means, stds = compute_mean_std(dataset_mean, sample_size=100_000, batch_size=4096, num_workers=dataloader_kwargs["num_workers"], pin_memory=dataloader_kwargs["pin_memory"], persistent_workers=dataloader_kwargs["persistent_workers"])
+        dataset_mean.close()
+
+        dataset = ZPairDataset(files, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", var], y_source = "truth", y_field = [var], fallback_source = "egammas")
+        loader = DataLoader(dataset, **dataloader_kwargs)
+        prediction_dict[var] = predict(models[var], loader, device, means=means, stds=stds, log_target=log_target)
+        dataset.close()
+
+    pt1 = prediction_dict["pt"][:, 0]
+    eta1 = prediction_dict["eta"][:, 0]
+    phi1 = prediction_dict["phi"][:, 0]
+    e1 = prediction_dict["e"][:, 0]
+    pt2 = prediction_dict["pt"][:, 2]
+    eta2 = prediction_dict["eta"][:, 2]
+    phi2 = prediction_dict["phi"][:, 2]
+    e2 = prediction_dict["e"][:, 2]
+
+    z_masses = _compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
+    return z_masses
+
+def _get_totals_from_distribution(
+    files_path : list[Path],
+    model : torch.nn.Module,
+    device : torch.device,
+    mc_signal_hist : ArrayLike, 
+    mc_background_hist : ArrayLike, 
+    data_masses : ArrayLike,
+    dataloader_kwargs : dict,
+    bins : int | list[float] = 1000,
+    n_total : int = 200,
+    
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
+
+    Arguments:
+    - files_path: A list of paths to the H5 files containing the data.
+    - model: A PyTorch model used for making predictions.
+    - device: The device (CPU or GPU) on which the model and data are located
+    - mc_signal_hist: The Monte Carlo signal histogram.
+    - mc_background_hist: The Monte Carlo background histogram.
+    - data_masses: The Z boson masses from the data.
+    - dataloader_kwargs: A dictionary of keyword arguments to pass to the DataLoader constructor
+
+    Keywords:
+    - bins: The number of bins or the bin edges for the histograms. Default is 1000.
+    - n_total: The number of thresholds to evaluate. Default is 200.
+
+    Returns:
+    - N_tp: An array containing the number of true positives for each threshold.
+    - N_tn: An array containing the number of true negatives for each threshold.
+    """
+    dataset_mean = H5EgammaDataset(files_path, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], y_field = None)
+    means, stds = compute_mean_std(dataset_mean, sample_size=100_000, batch_size=4096, num_workers=dataloader_kwargs["num_workers"], pin_memory=dataloader_kwargs["pin_memory"], persistent_workers=dataloader_kwargs["persistent_workers"])
+    dataset_mean.close()
+
+    dataset = ZPairDataset(files_path, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], y_source = "egammas", y_field = [])
+    loader = DataLoader(dataset, **dataloader_kwargs)
+    predictions = predict(model, loader, device, means=means, stds=stds)
+    dataset.close()
+
+    N_tp = np.zeros(n_total)
+    N_tn = np.zeros(n_total)
+    prediction_values = np.linspace(-10, 10, n_total)
+
+    full_fit_vals = fit_data_to_mc(data_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+    N_bkg = (1.0-full_fit_vals[0]) * len(data_masses)
+
+    for i in range(n_total):
+        predicted_labels = (predictions > prediction_values[i]).astype(bool)
+        z_masses = data_masses[predicted_labels]
+        data_size = len(z_masses)
+        fit_vals = fit_data_to_mc(z_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+        signal_strength = fit_vals[0]
+
+        N_tp[i] =signal_strength * data_size
+        N_fp = (1 - signal_strength) * data_size
+        N_tn[i] = N_bkg - N_fp
+
+    return N_tp, N_tn
 
 def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 256, num_workers : int = 0, pin_memory : bool = False, persistent_workers : bool = True) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -197,9 +365,10 @@ def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size 
         feature_sum_event += safe_event_features.sum(dim=0)
         feature_squared_sum_event += (safe_event_features ** 2).sum(dim=0)
         count_event += finite_event.sum(dim=0)
-
+        print(300*" ", end='\r')  # Clear the line
         print(f"Calculating mean and std for normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
 
+    print(300*" ", end='\r')  # Clear the line
     means = feature_sum / count
     variances = feature_squared_sum / count - means ** 2
     stds = torch.sqrt(torch.clamp(variances, min=0))
@@ -232,6 +401,7 @@ def find_Z_peak(
     mix_files_path : str | Path | list[Path] | None =None,
     mixture_ratio : float | None = None,
     mixture_seed : int = 0,
+    verbosity : int = 1,
 ) -> int:
     """
     Given a path to H5 files, compute the invariant mass of Z bosons formed by pairs of particles (electrons, muons, or taus) and save the results to a CSV file. Optionally, apply a global mask to filter the particles.
@@ -246,6 +416,7 @@ def find_Z_peak(
     - mix_files (str, Path, or list): Optional mixed H5 file(s), following H5EgammaDataset semantics.
     - mixture_ratio (float): Fraction of rows selected from the main files when mixing.
     - mixture_seed (int): Seed used for deterministic mixture row selection.
+    - verbosity (int): Level of verbosity for logging. Default is 1.
 
     Returns:
     - int: Returns 1 upon successful completion.
@@ -282,7 +453,8 @@ def find_Z_peak(
 
             index_s = np.where(indexes[1:] < indexes[:-1])[0]
             if len(index_s) > 0:
-                print(f"Warning: Indexes are not strictly increasing in file {file}. Found {len(index_s)} decreasing indexes at positions {index_s}.")
+                if verbosity > 0:
+                    print(f"Warning: Indexes are not strictly increasing in file {file}. Found {len(index_s)} decreasing indexes at positions {index_s}.")
                 for i in index_s:
                     indexes[i + 1:] += (indexes[i] - indexes[i + 1] + n_egammas[i])
 
@@ -345,6 +517,7 @@ def find_Z_peak(
                 values[4], values[5], values[6], values[7],
             ))
             z_count = len(first_rows)
+        print(300*" ", end='\r')  # Clear the line
         print(f"Processed file {j+1}/{len(h5_files)}: Found {z_count} Z masses", end='\r')
 
     if global_mask is not False and global_mask_index != len(global_mask):
@@ -352,7 +525,7 @@ def find_Z_peak(
             f"Global mask length {len(global_mask)} does not match "
             f"the expected selected-row length {global_mask_index}."
         )
-
+    print(300*" ", end='\r')  # Clear the line
     print(f"Saving Z masses to {csv_output_path}")
     np.savetxt(csv_output_path, z_masses)
     return 1
@@ -379,6 +552,7 @@ def find_Z_peak_pairs(
     - mix_files_path (str or Path): Optional path to mixed H5 file(s), following ZPairDataset semantics.
     - mixture_ratio (float): Fraction of rows selected from the main files when mixing.
     - mixture_seed (int): Seed used for deterministic mixture row selection.
+    - verbosity (int): Level of verbosity for logging. Default is 1.
     
     Returns:
     - int: Returns 1 upon successful completion.
@@ -419,7 +593,8 @@ def find_Z_peak_pairs(
 
             index_s = np.where(indexes[1:] < indexes[:-1])[0]
             if len(index_s) > 0:
-                print(f"Warning: Indexes are not strictly increasing in file {file}. Found {len(index_s)} decreasing indexes at positions {index_s}.")
+                if verbosity > 0:
+                    print(f"Warning: Indexes are not strictly increasing in file {file}. Found {len(index_s)} decreasing indexes at positions {index_s}.")
                 for i in index_s:
                     indexes[i + 1:] += (indexes[i] - indexes[i + 1] + n_egammas[i])
 
@@ -651,158 +826,7 @@ def create_pseudo_roc_curve(
     print(f"Pseudo ROC curve creation complete. Returning results.")
     return N_tp_mc, N_tn_mc, N_tp_fit_mc, N_tn_fit_mc, N_tp_fit_data, N_tn_fit_data, N_tp_cut, N_tn_cut
 
-def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : torch.device, dataloader_kwargs : dict, n_total : int = 200) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
-    """
-    Given a model, a full data loader, and a target data loader, compute the total number of true positives and true negatives for different prediction thresholds and the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
 
-    Arguments:
-    - model: A PyTorch model used for making predictions.
-    - full_loader: A DataLoader that provides the full dataset for making predictions.
-    - target_loader: A DataLoader that provides the target labels for computing true positives and true negatives.
-    - device: The device (CPU or GPU) on which the model and data are located.
-
-    Keywords:
-    - n_total: The number of thresholds to evaluate. Default is 200.
-
-    Returns:
-    - N_tp: An array containing the number of true positives for each threshold.
-    - N_tn: An array containing the number of true negatives for each threshold.
-    - N_tp_cut: The number of true positives for the cut threshold.
-    - N_tn_cut: The number of true negatives for the cut threshold.
-    """
-    mc_dataset = ZPairDataset(mc_files, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], y_source = "egammas", y_field = ["truthOrigin", "passid_Medium"])
-
-    full_loader = DataLoader(mc_dataset, **dataloader_kwargs)
-    target_loader = DataLoader(_TargetOnlyDataset(mc_dataset), **dataloader_kwargs)
-
-    truth = []
-    pseudo_truth = []
-
-    for targets in target_loader:
-        truth.append(targets[:,0])
-        pseudo_truth.append(targets[:,1])
-
-    truth = np.concatenate(truth, axis=0) == 13
-    truth = truth.reshape(-1, 2)
-    truth = truth[:, 0] * truth[:, 1]
-
-    pseudo_truth = np.concatenate(pseudo_truth, axis=0)
-    pseudo_truth = pseudo_truth.reshape(-1, 2)
-    pseudo_truth = pseudo_truth[:, 0] * pseudo_truth[:, 1]
-
-    predictions = predict(model, full_loader, device=device)
-
-
-    cut_labels = (pseudo_truth > 0.5)
-    N_tp_cut = (truth * cut_labels).sum()
-    N_tn_cut = ((1 - truth) * cut_labels).sum()
-        
-    N_tp = np.zeros(n_total)
-    N_tn = np.zeros(n_total)
-    prediction_values = np.linspace(-10, 10, n_total)
-    for i in range(n_total):
-        predicted_labels = (predictions > prediction_values[i]).astype(bool)
-        N_tp[i] = (truth * predicted_labels).sum()
-        N_tn[i] = ((1 - truth) * predicted_labels).sum()
-    return N_tp, N_tn, N_tp_cut, N_tn_cut
-
-def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Module], device : torch.device, dataloader_kwargs : dict) -> np.ndarray:
-    """
-    Given a model and a data loader, compute the predicted Z boson masses for the input data.
-
-    Arguments:
-    - model: A PyTorch model used for making predictions.
-    - data_loader: A DataLoader that provides the input data for making predictions.
-    - device: The device (CPU or GPU) on which the model and data are located.
-    - dataloader_kwargs: A dictionary of keyword arguments to pass to the DataLoader constructor.
-
-    Returns:
-    - predicted_masses: An array containing the predicted Z boson masses for the input data.
-    """
-
-    variables = ["pt", "eta", "phi", "e"]
-    prediction_dict = {}
-    for var in variables:
-        print(f"Predicting {var} for Z mass calculation...")
-        if var not in models.keys():
-            raise ValueError(f"Model for variable '{var}' is missing in the provided models dictionary.")
-        if var in ["pt", "e"]:
-            log_target = True
-        else:
-            log_target = False
-
-        dataset = ZPairDataset(files, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", var], y_source = "truth", y_field = [var], fallback_source = "egammas")
-        loader = DataLoader(dataset, **dataloader_kwargs)
-        prediction_dict[var] = predict(models[var], loader, device, log_target=log_target)
-
-    predicted_masses = []
-    pt1 = prediction_dict["pt"][:, 0]
-    eta1 = prediction_dict["eta"][:, 0]
-    phi1 = prediction_dict["phi"][:, 0]
-    e1 = prediction_dict["e"][:, 0]
-    pt2 = prediction_dict["pt"][:, 2]
-    eta2 = prediction_dict["eta"][:, 2]
-    phi2 = prediction_dict["phi"][:, 2]
-    e2 = prediction_dict["e"][:, 2]
-
-    z_masses = _compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
-    return z_masses
-
-def _get_totals_from_distribution(
-    files_path : list[Path],
-    model : torch.nn.Module,
-    device : torch.device,
-    mc_signal_hist : ArrayLike[np.float64], 
-    mc_background_hist : ArrayLike[np.float64], 
-    data_masses : ArrayLike[np.float64], 
-    dataloader_kwargs : dict,
-    bins : int | list[float] = 1000,
-    n_total : int = 200,
-    
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
-
-    Arguments:
-    - files_path: A list of paths to the H5 files containing the data.
-    - model: A PyTorch model used for making predictions.
-    - device: The device (CPU or GPU) on which the model and data are located
-    - mc_signal_hist: The Monte Carlo signal histogram.
-    - mc_background_hist: The Monte Carlo background histogram.
-    - data_masses: The Z boson masses from the data.
-    - dataloader_kwargs: A dictionary of keyword arguments to pass to the DataLoader constructor
-
-    Keywords:
-    - bins: The number of bins or the bin edges for the histograms. Default is 1000.
-    - n_total: The number of thresholds to evaluate. Default is 200.
-
-    Returns:
-    - N_tp: An array containing the number of true positives for each threshold.
-    - N_tn: An array containing the number of true negatives for each threshold.
-    """
-    dataset = ZPairDataset(files_path, exclude_features=["truth"], exclude_fields = ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], y_source = "egammas", y_field = [])
-    loader = DataLoader(dataset, **dataloader_kwargs)
-    predictions = predict(model, loader, device)
-
-    N_tp = np.zeros(n_total)
-    N_tn = np.zeros(n_total)
-    prediction_values = np.linspace(-10, 10, n_total)
-
-    full_fit_vals = fit_data_to_mc(data_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
-    N_bkg = (1.0-full_fit_vals[0]) * len(data_masses)
-
-    for i in range(n_total):
-        predicted_labels = (predictions > prediction_values[i]).astype(bool)
-        z_masses = data_masses[predicted_labels]
-        data_size = len(z_masses)
-        fit_vals = fit_data_to_mc(z_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
-        signal_strength = fit_vals[0]
-
-        N_tp[i] =signal_strength * data_size
-        N_fp = (1 - signal_strength) * data_size
-        N_tn[i] = N_bkg - N_fp
-
-    return N_tp, N_tn
 
 
     

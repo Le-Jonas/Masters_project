@@ -379,7 +379,7 @@ def train_model(
         )
         val_losses.append(val_loss)
         train_losses.append(epoch_loss)
-
+        print(300*" ", end='\r')  # Clear the line
         print(f'Epoch {epoch+1}/{num_epochs}, Training Loss: {epoch_loss:.4f}, Validation Loss: {val_loss:.4f}')
 
         # Save the best model based on validation loss
@@ -469,7 +469,8 @@ def validate_model(
     stds_i, stds_e = _move_to_device(stds, device)
     binary_value = torch.as_tensor(binary_target, dtype=torch.float32, device=device) if binary_target is not False else None
     with torch.no_grad():
-        for data in val_loader:
+        expected_batches = len(val_loader)
+        for batch, data in enumerate(val_loader):
             inputs, event_features, targets, domain_targets = _tuple_unpack_to_device(data, device)
             if log_target:
                 targets = torch.log1p(targets)
@@ -516,12 +517,15 @@ def validate_model(
             batch_size = targets.size(0)
             val_loss += loss.item() * batch_size
             samples_seen += batch_size
+            print(300*" ", end='\r')  # Clear the line
+            print(f"Validation batch {batch+1}/{expected_batches}: Loss = {loss.item():.4f}", end='\r')
 
     if samples_seen != len(val_loader.dataset):
         raise RuntimeError(
             f"Validation loader yielded {samples_seen} samples, "
             f"but its dataset contains {len(val_loader.dataset)}."
         )
+    print(300*" ", end='\r')  # Clear the line
     val_loss /= samples_seen
     return val_loss
 
@@ -553,21 +557,43 @@ def predict(
     predictions = []
     means_i, means_e = _move_to_device(means, device)
     stds_i, stds_e = _move_to_device(stds, device)
-    with torch.no_grad():
-        for data in test_loader:
-            inputs, event_features, _, _ = _tuple_unpack_to_device(data, device)
-            inputs = _normalize_inputs(inputs, means_i, stds_i)
-            event_features = _normalize_inputs(event_features, means_e, stds_e)
+    dataset = getattr(test_loader, "dataset", None)
+    previous_skip_target_reads = None
+    if dataset is not None and hasattr(dataset, "__getitems__"):
+        previous_skip_target_reads = getattr(dataset, "skip_target_reads", False)
+        dataset.skip_target_reads = True
+    try:
+        with torch.inference_mode():
+            expected_batches = len(test_loader)
+            for batch, data in enumerate(test_loader):
+                inputs, event_features, _, _ = _tuple_unpack_to_device(data, device)
+                inputs = _normalize_inputs(inputs, means_i, stds_i)
+                event_features = _normalize_inputs(event_features, means_e, stds_e)
 
-            inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})  # Replace NaN values with 0.0
-            event_features = torch.nan_to_num(event_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
+                inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})  # Replace NaN values with 0.0
+                event_features = torch.nan_to_num(event_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
 
-            outputs = model(*inputs, event_features)
-            outputs = outputs.to(dtype=torch.float32)
-            if log_target:
-                outputs = torch.expm1(outputs)  # Apply inverse of log1p if log_target is True
-            predictions.append(outputs.cpu().numpy())
-        print("Prediction completed")
+                outputs = model(*inputs, event_features)
+                outputs = outputs.to(dtype=torch.float32)
+                if log_target:
+                    if outputs.shape[-1] == 1:
+                        outputs = torch.expm1(outputs)
+                    elif outputs.shape[-1] % 2 == 0:
+                        outputs = outputs.clone()
+                        outputs[..., 0::2] = torch.expm1(outputs[..., 0::2])
+                    else:
+                        raise ValueError(
+                            "log_target prediction expects one output or "
+                            "alternating mean/log-variance outputs."
+                        )
+                predictions.append(outputs.cpu().numpy())
+                print(300*" ", end='\r')  # Clear the line
+                print(f"Prediction batch {batch+1}/{expected_batches}: Predictions shape = {outputs.shape}", end='\r')
+            print(300*" ", end='\r')  # Clear the line
+            print("Prediction completed")
+    finally:
+        if dataset is not None and previous_skip_target_reads is not None:
+            dataset.skip_target_reads = previous_skip_target_reads
     return np.concatenate(predictions)
 
 
@@ -600,6 +626,7 @@ def compressed_training_function(
     binary_target : bool | float = False,
     log_target : bool = False,
     validation_split : float = 0.25,
+    sample_size : int = 1000000,
 
 
 ) -> tuple[torch.nn.Module, list, list]:
@@ -615,7 +642,7 @@ def compressed_training_function(
         mixture_ratio = mixture_ratio,
     )
 
-    means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=1000000, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+    means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
 
     train_size_egam = int((1 - validation_split) * len(h5_files))
     train_size_data = int((1 - validation_split) * len(mix_files))
