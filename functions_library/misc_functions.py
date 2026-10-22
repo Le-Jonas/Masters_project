@@ -9,7 +9,6 @@ from .model_training import predict
 from .dataset_classes import H5EgammaDataset, ZPairDataset
 from .curve_fitting import fit_data_to_mc
 
-from __future__ import annotations #Helps oskar because he lives in 1978
 
 class _FeatureOnlyDataset(Dataset):
     """Expose feature-only batched reads to DataLoader workers."""
