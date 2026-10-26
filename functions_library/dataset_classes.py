@@ -282,8 +282,10 @@ class H5EgammaDataset(Dataset):
                 return [Path(paths)]
             return [Path(path) for path in paths]
 
-        self.files = as_paths(files)
-        self.mix_files = as_paths(mix_files) if mix_files is not None else []
+        main_files = as_paths(files)
+        mixed_files = as_paths(mix_files) if mix_files is not None else []
+        self.files = main_files + mixed_files
+        self.mix_files = mixed_files
         if self.mix_files and mixture_ratio is None:
             raise ValueError("mixture_ratio is required when mix_files is provided.")
         if not self.mix_files and mixture_ratio is not None:
@@ -294,8 +296,7 @@ class H5EgammaDataset(Dataset):
         self.metadata_workers = metadata_workers
         self.metadata_backend = metadata_backend
         self.valid_fields = normalized_valid_fields
-        self.file_labels = [0] * len(self.files) + [1] * len(self.mix_files)
-        self.files.extend(self.mix_files)
+        self.file_labels = [0] * len(main_files) + [1] * len(mixed_files)
         self.y_source = y_source
         self.y_fields = [] if y_field is None else [y_field] if isinstance(y_field, str) else list(y_field)
         self.fallback_source = fallback_source
@@ -821,7 +822,7 @@ class H5EgammaDataset(Dataset):
         run_ends = np.r_[runs, len(sorted_indices)]
         use_slices = len(run_starts) <= max(1, len(sorted_indices) // 2)
 
-        if not include_target or self.mix_files:
+        if not include_target:
             if not include_target or not target_fields:
                 target = np.empty((len(sorted_indices), 0), dtype=np.float32)
             elif self.y_source == "eventwise":

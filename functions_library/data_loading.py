@@ -17,12 +17,26 @@ class ShuffledContiguousBatchSampler(Sampler):
     - dataset_size (int): The total number of samples in the dataset.
     - batch_size (int): The number of samples in each batch.
     - dataset (Dataset): The dataset to sample from.
+
+    Keywords:
+    - discard_remainder (bool): Whether to discard rows that cannot be included
+      in a complete ratio-balanced batch. Defaults to False.
     """
     #Initializes the sampler with the dataset size and batch size. It will create batches of contiguous indices and shuffle them for each epoch.
-    def __init__(self, dataset_size : int, batch_size : int, dataset : _class_.Dataset | None = None):
+    def __init__(
+        self,
+        dataset_size : int,
+        batch_size : int,
+        dataset : _class_.Dataset | None = None,
+        *,
+        discard_remainder : bool = False,
+    ):
         self.dataset_size = dataset_size
         self.batch_size = batch_size
         self.dataset = dataset
+        if not isinstance(discard_remainder, bool):
+            raise TypeError("discard_remainder must be a boolean.")
+        self.discard_remainder = discard_remainder
 
     def _size(self) -> int:
         """
@@ -87,14 +101,30 @@ class ShuffledContiguousBatchSampler(Sampler):
         batches = []
         source_0_position = 0
         source_1_position = 0
-        while source_0_position < len(source_indices[0]) or source_1_position < len(source_indices[1]):
+        while (
+            source_0_position + source_0_batch_size <= len(source_indices[0])
+            and source_1_position + source_1_batch_size <= len(source_indices[1])
+        ):
             source_0_batch = source_indices[0][source_0_position:source_0_position + source_0_batch_size]
             source_1_batch = source_indices[1][source_1_position:source_1_position + source_1_batch_size]
-            if len(source_0_batch) == 0 and len(source_1_batch) == 0:
-                break
             batches.append(np.concatenate((source_0_batch, source_1_batch)).tolist())
             source_0_position += len(source_0_batch)
             source_1_position += len(source_1_batch)
+
+        if not self.discard_remainder:
+            remaining_indices = [
+                source_indices[0][source_0_position:],
+                source_indices[1][source_1_position:],
+            ]
+            non_empty_remaining = [
+                indices for indices in remaining_indices if len(indices)
+            ]
+            if non_empty_remaining:
+                remaining = np.concatenate(non_empty_remaining)
+                batches.extend(
+                    remaining[start:start + self.batch_size].tolist()
+                    for start in range(0, len(remaining), self.batch_size)
+                )
         np.random.shuffle(batches)
         yield from batches
 
@@ -119,10 +149,19 @@ class ShuffledContiguousBatchSampler(Sampler):
             source_0_batch_size = int(round(self.batch_size * self.dataset.mixture_ratio))
             source_0_batch_size = min(max(source_0_batch_size, 1), self.batch_size - 1)
             source_1_batch_size = self.batch_size - source_0_batch_size
-            return max(
-                (source_counts[0] + source_0_batch_size - 1) // source_0_batch_size,
-                (source_counts[1] + source_1_batch_size - 1) // source_1_batch_size,
+            balanced_batches = min(
+                source_counts[0] // source_0_batch_size,
+                source_counts[1] // source_1_batch_size,
             )
+            if self.discard_remainder:
+                return balanced_batches
+            remaining_count = (
+                source_counts[0] - balanced_batches * source_0_batch_size
+                + source_counts[1] - balanced_batches * source_1_batch_size
+            )
+            return balanced_batches + (
+                remaining_count + self.batch_size - 1
+            ) // self.batch_size
         size = self._size()
         return (size + self.batch_size - 1) // self.batch_size
 

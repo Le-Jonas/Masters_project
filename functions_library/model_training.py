@@ -108,15 +108,14 @@ def _prepare_binary_targets(targets : torch.Tensor, domain_targets : torch.Tenso
     Returns:
     - torch.Tensor: The prepared binary target tensor.
     """
-    if domain_targets is None:
+    if domain_targets is None or domain == "int":
         targets = torch.eq(targets, binary_value).float()
-    else:
+    elif domain == "bool":
         targets_0 = torch.eq(targets[domain_targets == 0], binary_value).float()
-        if domain == "bool":
-            targets_1 = targets[domain_targets == 1].float()
-        elif domain == "int":
-            targets_1 = torch.eq(targets[domain_targets == 1], binary_value).float()
+        targets_1 = targets[domain_targets == 1].float()
         targets = torch.cat((targets_0, targets_1), dim=0)
+    else:
+        raise ValueError(f"Invalid domain value: {domain}. Must be 'bool' or 'int'.")
     if targets.ndim >= 3 and targets.shape[-2] == 2:
         # Pair datasets store targets as (batch, two_particles, target_fields).
         targets = targets.all(dim=(-2, -1))
@@ -201,11 +200,13 @@ def train_model(
         stds : tuple | None = None, 
         log_target : bool = False, 
         binary_target : bool | float = False,
+        domain : str = "bool",
         domain_adversary : torch.nn.Module | None = None,
         domain_loss_function : Callable | None = None,
         gradient_reversal : torch.nn.Module | None = None,
         domain_loss_weight : float = 1.0,
         mixed_target_loss_weight : float = 0.25,
+        discard_remainder : bool = True,
     ) -> tuple[torch.nn.Module, list, list]:
     """
     Train a PyTorch model using the provided training and validation data loaders, optimizer, and loss function.
@@ -234,6 +235,7 @@ def train_model(
     - mixed_target_loss_weight (float): Relative weight for the physics loss
       for samples with domain target 1, whose targets are weak labels.
       Default is 0.25.
+    - discard_remainder (bool): Whether to discard rows that do not keep the wanted mixture ratio for the dataset.
 
     Returns:
     - model (torch.nn.Module): The trained PyTorch model.
@@ -256,6 +258,8 @@ def train_model(
         )
     if domain_loss_weight < 0 or mixed_target_loss_weight < 0:
         raise ValueError("Loss weights must be non-negative.")
+    if discard_remainder and not isinstance(discard_remainder, bool):
+        raise TypeError("discard_remainder must be a boolean.")
 
     model.to(device)
     if domain_adversary is not None:
@@ -276,6 +280,8 @@ def train_model(
         gradient_reversal.to(device)
     if isinstance(loss_function, torch.nn.Module):
         loss_function.to(device)
+    if isinstance(gradient_reversal, torch.nn.Module):
+        gradient_reversal.to(device)
     for state in optimizer.state.values():
         for key, value in state.items():
             if torch.is_tensor(value):
@@ -304,7 +310,7 @@ def train_model(
             if log_target:
                 targets = torch.log1p(targets)  # Add 1 to avoid log(0)
             if binary_target is not False:
-                targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = "bool")
+                targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
 
             inputs = _normalize_inputs(inputs, means_i, stds_i)
             eventwise_features = _normalize_inputs(eventwise_features, means_e, stds_e)
@@ -355,7 +361,7 @@ def train_model(
                 end='\r',
             )
 
-        if samples_seen != len(train_loader.dataset):
+        if samples_seen != len(train_loader.dataset) and not discard_remainder:
             raise RuntimeError(
                 f"Training loader yielded {samples_seen} samples, "
                 f"but its dataset contains {len(train_loader.dataset)}."
@@ -376,6 +382,7 @@ def train_model(
             gradient_reversal=gradient_reversal,
             domain_loss_weight=domain_loss_weight,
             mixed_target_loss_weight=mixed_target_loss_weight,
+            domain=domain
         )
         val_losses.append(val_loss)
         train_losses.append(epoch_loss)
@@ -410,6 +417,7 @@ def validate_model(
         stds : tuple | None = None, 
         log_target : bool = False, 
         binary_target : bool | float = False,
+        domain : str = "bool",
         domain_adversary : torch.nn.Module | None = None,
         domain_loss_function : Callable | None = None,
         gradient_reversal : torch.nn.Module | None = None,
@@ -475,7 +483,7 @@ def validate_model(
             if log_target:
                 targets = torch.log1p(targets)
             if binary_target is not False:
-                targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = "bool")
+                targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
 
             if not torch.isfinite(targets).all():
                 raise ValueError(f"Warning: Non-finite values detected in targets")
@@ -629,6 +637,8 @@ def compressed_training_function(
     validation_split : float = 0.25,
     sample_size : int = 1000000,
     use_old_model : torch.nn.Module | bool = False,
+    discard_remainder : bool = True,
+    domain : str = "bool",
 
 
 
@@ -653,7 +663,7 @@ def compressed_training_function(
 
     train_dataset = dataset_class(
         h5_files[:train_size_egam],
-        mix_files = mix_files[:train_size_egam],
+        mix_files = mix_files[:train_size_data],
         exclude_features = exclude_features,
         exclude_fields = exclude_fields,
         y_source = y_source,
@@ -678,7 +688,7 @@ def compressed_training_function(
     )
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
-    train_sampler = data_loading.ShuffledContiguousBatchSampler(len(train_dataset), batch_size=batch_size, dataset=train_dataset)
+    train_sampler = data_loading.ShuffledContiguousBatchSampler(len(train_dataset), batch_size=batch_size, dataset=train_dataset, discard_remainder=discard_remainder)
     train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, num_workers=num_workers, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers, pin_memory=pin_memory)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers, pin_memory=pin_memory)
 
@@ -704,11 +714,11 @@ def compressed_training_function(
             domain_count=1,
         )
         gradient_reversal = neural_models.GradientReversal(strength = gradient_reversal_strength)
+        optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=0.001)
     else:
         domain_adversary = None
         gradient_reversal = None
-
-    optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=0.001)
+        optimizer = optimizer_class(list(model.parameters()), lr=0.001)
     train_losses, val_losses = train_model(model, 
                                            optimizer, 
                                            loss_function, 
@@ -725,5 +735,7 @@ def compressed_training_function(
                                            domain_loss_function = domain_loss_function, 
                                            domain_loss_weight = domain_loss_weight, 
                                            mixed_target_loss_weight = mixed_target_loss_weight,
+                                           discard_remainder = discard_remainder,
+                                           domain = domain
                                            )
     return model, train_losses, val_losses
