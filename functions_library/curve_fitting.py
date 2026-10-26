@@ -105,8 +105,6 @@ def fit_data_to_mc(
     Returns:
     - tuple: A tuple containing the fitted parameters, their errors, and the chi-squared value.
     """
-    if premade_hists and bin_edges is None:
-        raise ValueError("bin_edges must be provided if premade_hists is True.")
     
     if premade_hists:
         counts_sig = MC_sig
@@ -154,11 +152,12 @@ def fit_data_to_mc(
     minimizer.migrad(ncall=10000)
 
     if minimizer.fmin.is_above_max_edm or minimizer.fmin.has_reached_call_limit:
-        raise RuntimeError(
-            f"Minuit failed to find a minimum: {minimizer.fmin}"
-        )
+        return float(minimizer.values[0]), float(minimizer.errors[0]), float(minimizer.fval), 0
+        #raise RuntimeError(
+        #    f"Minuit failed to find a minimum: {minimizer.fmin}"
+        #)
 
-    return float(minimizer.values[0]), float(minimizer.errors[0]), float(minimizer.fval)
+    return float(minimizer.values[0]), float(minimizer.errors[0]), float(minimizer.fval), 1
 
 def gaussian(x : ArrayLike, mean : float, stddev : float) -> ArrayLike:
     """

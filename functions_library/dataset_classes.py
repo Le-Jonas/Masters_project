@@ -10,6 +10,32 @@ import torch
 import time
 
 
+def _normalize_feature_fields(
+    feature_fields: dict[str, list[str]] | None,
+    argument_name: str,
+) -> dict[str, set[str]] | None:
+    """Normalize feature-scoped field selections."""
+    if feature_fields is None:
+        return None
+    if not isinstance(feature_fields, dict):
+        raise TypeError(f"{argument_name} must be a dictionary of field lists.")
+
+    normalized: dict[str, set[str]] = {}
+    for feature_name, fields in feature_fields.items():
+        if not isinstance(feature_name, str):
+            raise TypeError(f"{argument_name} feature names must be strings.")
+        if isinstance(fields, str) or not isinstance(fields, list):
+            raise TypeError(
+                f"{argument_name}[{feature_name!r}] must be a list of field names."
+            )
+        if not all(isinstance(field, str) for field in fields):
+            raise TypeError(
+                f"{argument_name}[{feature_name!r}] must contain field-name strings."
+            )
+        normalized[feature_name] = set(fields)
+    return normalized
+
+
 def _resolve_target_source_and_fields(
     h5_file: h5py.File,
     y_source: str,
@@ -57,15 +83,17 @@ def _scan_h5_file_rows(
     y_fields: list[str],
     fallback_source: str | None = None,
     fallback_field: list[str] | None = None,
+    valid_fields: dict[str, list[str]] | None = None,
 ) -> np.ndarray:
     """
-    Read one file's alignment and finite-target metadata in a worker.
+    Read one file's alignment and finite-field metadata in a worker.
     
     Arguments:
     - path (Path): The path to the H5 file.
     - feature_names (list of str): The names of the features to check for alignment.
     - y_source (str): The source of the target variable.
     - y_fields (list of str): The fields of the target variable.
+    - valid_fields (dict): Feature names mapped to fields that must be finite.
 
     Returns:
     - np.ndarray: An array of valid row indices.
@@ -74,17 +102,36 @@ def _scan_h5_file_rows(
         lengths = {name: len(h5_file[name]) for name in feature_names}
         if len(set(lengths.values())) != 1:
             raise ValueError(f"Event data not aligned in {path}")
-        target_source, target_fields = _resolve_target_source_and_fields(
+        _resolve_target_source_and_fields(
             h5_file, y_source, y_fields, fallback_source=fallback_source, fallback_field=fallback_field
         )
-        if target_fields:
-            values = [
-                np.asarray(h5_file[target_source][field][:], dtype=np.float32)
-                for field in target_fields
-            ]
-            target = np.stack(values, axis=-1)
-            return np.flatnonzero(np.isfinite(target).all(axis=-1))
-        return np.arange(next(iter(lengths.values())), dtype=np.int64)
+        valid_rows = np.ones(next(iter(lengths.values())), dtype=bool)
+        for feature_name, fields in (valid_fields or {}).items():
+            if feature_name not in h5_file:
+                continue
+            available_fields = h5_file[feature_name].dtype.names
+            for field in fields:
+                if field not in available_fields:
+                    continue
+                try:
+                    values = np.asarray(h5_file[feature_name][field][:])
+                    if len(values) != len(valid_rows):
+                        raise ValueError(
+                            f"Feature {feature_name!r} has {len(values)} rows, but "
+                            f"aligned features have {len(valid_rows)} rows in {path}"
+                        )
+                    finite = (
+                        np.isfinite(values).reshape(len(values), -1).all(axis=1)
+                        if len(values)
+                        else np.ones(0, dtype=bool)
+                    )
+                except TypeError as error:
+                    raise TypeError(
+                        f"Field {feature_name}.{field} must contain numeric values "
+                        "to be checked for finiteness"
+                    ) from error
+                valid_rows &= finite
+        return np.flatnonzero(valid_rows)
 
 
 def _build_file_pair_indices(path : Path, valid_rows : np.ndarray, feature_name : str) -> tuple[np.ndarray, np.ndarray]:
@@ -167,15 +214,17 @@ class H5EgammaDataset(Dataset):
     - y_field (str or list of str): The field(s) to be used as the target variable. Default is "pt".
     - fallback_source (str or None): The source of the fallback target variable. Default is None.
     - fallback_field (str or list of str): Target field(s) used when the primary target fields are unavailable in a file. Default is None.
-    - exclude_fields (list of str): List of field names to exclude from the dataset. Default is None which means all fields are included.
+    - exclude_fields (dict): Feature names mapped to lists of field names to exclude. Default is None which means all fields are included.
     - exclude_features (list of str): List of feature names to exclude from the dataset. Default is None which means all features are included.
-    - include_fields (list of str): List of field names to include in the dataset. Default is None which means all fields are included.
+    - include_fields (dict): Feature names mapped to lists of field names to include. Features not listed retain all fields. Default is None which means all fields are included.
     - include_features (list of str): List of feature names to include in the dataset. Default is None which means all features are included.
     - mix_files (str or list of str): Path(s) to additional HDF5 file(s) to mix with the main dataset. Default is None which means no mixing is applied.
     - mixture_ratio (float): The ratio of the main dataset to the mixed dataset. Must be between 0 and 1. Default is None which means no mixing is applied.
     - mixture_seed (int): Random seed for reproducibility when mixing datasets. Default is 0.
     - metadata_workers (int): Number of concurrent workers used to scan files during construction. Default is 8.
     - metadata_backend (str): Scanner backend: "auto", "thread", or "process". Default is "auto".
+    - valid_fields (dict): Feature names mapped to fields that must be finite for a
+      row to be included. Default is None, which applies no finite-value filter.
     """
     def __init__(
         self,
@@ -184,15 +233,16 @@ class H5EgammaDataset(Dataset):
         y_field : str | list[str] = "pt",
         fallback_source : str | None = None,
         fallback_field : str | list[str] | None = None,
-        exclude_fields : list[str] | None = None,
+        exclude_fields : dict[str, list[str]] | None = None,
         exclude_features : list[str] | None = None,
-        include_fields : list[str] | None = None,
+        include_fields : dict[str, list[str]] | None = None,
         include_features : list[str] | None = None,
         mix_files : str | list[str] | Path | list[Path] | None = None,
         mixture_ratio : float | None = None,
         mixture_seed : int = 0,
         metadata_workers : int = 8,
         metadata_backend : str = "auto",
+        valid_fields : dict[str, list[str]] | None = None,
     ):        
         if include_fields is not None and exclude_fields is not None:
             raise ValueError("Cannot specify both include_fields and exclude_fields.")
@@ -202,6 +252,21 @@ class H5EgammaDataset(Dataset):
             raise ValueError("metadata_workers must be a positive integer.")
         if metadata_backend not in {"auto", "thread", "process"}:
             raise ValueError('metadata_backend must be "auto", "thread", or "process".')
+        if valid_fields is not None and not isinstance(valid_fields, dict):
+            raise TypeError("valid_fields must be a dictionary of feature names to field lists.")
+        normalized_valid_fields = {}
+        for feature_name, fields in (valid_fields or {}).items():
+            if not isinstance(feature_name, str):
+                raise TypeError("valid_fields keys must be feature-name strings.")
+            if isinstance(fields, str) or not isinstance(fields, (list, tuple)):
+                raise TypeError(
+                    f"valid_fields[{feature_name!r}] must be a list of field names."
+                )
+            if not all(isinstance(field, str) for field in fields):
+                raise TypeError(
+                    f"valid_fields[{feature_name!r}] must contain field-name strings."
+                )
+            normalized_valid_fields[feature_name] = list(fields)
         
         def as_paths(paths : str | Path | list[str] | list[Path]) -> list[Path]:
             """
@@ -228,6 +293,7 @@ class H5EgammaDataset(Dataset):
         self.mixture_ratio = mixture_ratio
         self.metadata_workers = metadata_workers
         self.metadata_backend = metadata_backend
+        self.valid_fields = normalized_valid_fields
         self.file_labels = [0] * len(self.files) + [1] * len(self.mix_files)
         self.files.extend(self.mix_files)
         self.y_source = y_source
@@ -238,8 +304,8 @@ class H5EgammaDataset(Dataset):
             else [fallback_field] if isinstance(fallback_field, str)
             else list(fallback_field)
         )
-        self.exclude_fields = set(exclude_fields or [])
-        self.include_fields = set(include_fields) if include_fields is not None else None
+        self.exclude_fields = _normalize_feature_fields(exclude_fields, "exclude_fields") or {}
+        self.include_fields = _normalize_feature_fields(include_fields, "include_fields")
         self.valid_rows = []
         self.handles = {}
         self.lengths = []
@@ -297,6 +363,7 @@ class H5EgammaDataset(Dataset):
             [self.y_fields] * len(self.files),
             [self.fallback_source] * len(self.files),
             [self.fallback_field] * len(self.files),
+            [self.valid_fields] * len(self.files),
         )
         with executor_class(max_workers=min(self.metadata_workers, len(self.files))) as executor:
             scanned_files = executor.map(
@@ -321,6 +388,7 @@ class H5EgammaDataset(Dataset):
             self.y_fields,
             self.fallback_source,
             self.fallback_field,
+            self.valid_fields,
         )
 
     def __getstate__(self) -> dict[str, object]:
@@ -463,13 +531,15 @@ class H5EgammaDataset(Dataset):
         Returns:
         - list: A list of field names that should be included in the dataset.
         """
-        excluded = set(self.exclude_fields)
+        excluded = set(self.exclude_fields.get(feature_name, set()))
         if feature_name == self.y_source:
             excluded.update(self.y_fields)
             excluded.update(self.fallback_field)
 
         if self.include_fields is not None:
-            return [name for name in field_names if name in self.include_fields and name not in excluded]
+            included = self.include_fields.get(feature_name)
+            if included is not None:
+                return [name for name in field_names if name in included and name not in excluded]
         return [name for name in field_names if name not in excluded]
 
     def _read_target(self, h5_file : h5py.File, indices : ArrayLike) -> np.ndarray:
@@ -1117,6 +1187,188 @@ class H5EgammaDataset(Dataset):
             handle.close()
         self.handles.clear()
 
+
+class H5EgammaDatasetWrapper(Dataset):
+    """
+    A cheap view over an existing H5EgammaDataset.
+
+    The parent dataset performs all file scanning and HDF5 reads. This wrapper
+    only selects feature columns and target columns from the parent's outputs.
+    """
+
+    def __init__(
+        self,
+        dataset: H5EgammaDataset,
+        y_field: str | list[str] | None = None,
+        exclude_fields: dict[str, list[str]] | None = None,
+        exclude_features: list[str] | None = None,
+    ):
+        self.dataset = dataset
+        self.y_source = dataset.y_source
+        self.fallback_source = dataset.fallback_source
+        self.fallback_field = list(dataset.fallback_field)
+        self.file_labels = dataset.file_labels
+        self.features = list(dataset.features)
+        self.exclude_features = set(exclude_features or [])
+
+        normalized_exclude_fields = _normalize_feature_fields(
+            exclude_fields, "exclude_fields"
+        ) or {}
+        unknown_features = self.exclude_features.difference(self.features)
+        unknown_features.update(
+            feature_name
+            for feature_name in normalized_exclude_fields
+            if feature_name not in self.features and feature_name != "eventwise"
+        )
+        if unknown_features:
+            raise ValueError(
+                f"Wrapper feature filters reference unavailable features: "
+                f"{sorted(unknown_features)}"
+            )
+
+        parent_y_fields = list(dataset.y_fields)
+        requested_y_fields = (
+            parent_y_fields
+            if y_field is None
+            else [y_field] if isinstance(y_field, str) else list(y_field)
+        )
+        missing_y_fields = [
+            field for field in requested_y_fields if field not in parent_y_fields
+        ]
+        if missing_y_fields:
+            raise ValueError(
+                f"Wrapper y_field contains fields not present in the parent dataset: "
+                f"{missing_y_fields}"
+            )
+        self.y_fields = requested_y_fields
+        self._target_indices = [
+            parent_y_fields.index(field) for field in requested_y_fields
+        ]
+
+        self._is_pair_dataset = hasattr(dataset, "pair_offsets")
+        feature_indices = []
+        eventwise_indices = []
+        self.fields = []
+        for index, field_name in enumerate(dataset.fields):
+            prefix, feature_name, field = self._split_field_name(field_name)
+            if feature_name in self.exclude_features:
+                continue
+            excluded_fields = normalized_exclude_fields.get(feature_name, set())
+            if any(
+                field == excluded
+                or field.startswith(f"{excluded}_")
+                for excluded in excluded_fields
+            ):
+                continue
+            if feature_name == "eventwise":
+                eventwise_indices.append(
+                    sum(
+                        1
+                        for parent_field in dataset.fields[:index]
+                        if parent_field.startswith("eventwise_")
+                    )
+                )
+            elif self._is_pair_dataset:
+                feature_indices.append((
+                    prefix,
+                    sum(
+                        1
+                        for parent_field in dataset.fields[:index]
+                        if parent_field.startswith(f"{prefix}_")
+                    ),
+                ))
+            else:
+                feature_indices.append(
+                    sum(
+                        1
+                        for parent_field in dataset.fields[:index]
+                        if not parent_field.startswith("eventwise_")
+                    )
+                )
+            self.fields.append(field_name)
+        self._eventwise_indices = np.asarray(eventwise_indices, dtype=np.int64)
+        if self._is_pair_dataset:
+            self._feature_indices = {
+                "lepton1": [index for prefix, index in feature_indices if prefix == "lepton1"],
+                "lepton2": [index for prefix, index in feature_indices if prefix == "lepton2"],
+            }
+        else:
+            self._feature_indices = np.asarray(feature_indices, dtype=np.int64)
+
+    @staticmethod
+    def _split_field_name(field_name: str) -> tuple[str | None, str, str]:
+        prefix, separator, remainder = field_name.partition("_")
+        if prefix in {"lepton1", "lepton2"}:
+            feature_name, _, field = remainder.partition("_")
+            return prefix, feature_name, field
+        feature_name, separator, field = field_name.partition("_")
+        if not separator:
+            return None, field_name, ""
+        return None, feature_name, field
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def _select_item(
+        self,
+        item: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        features, eventwise_features, target, domain_target = item
+        features = features[self._feature_indices.tolist()]
+        eventwise_features = eventwise_features[self._eventwise_indices.tolist()]
+        if target.numel():
+            target = target[self._target_indices]
+        return features, eventwise_features, target, domain_target
+
+    def _select_pair_item(self, item):
+        first, second, eventwise, target, domain_target = item
+        first = first[self._feature_indices["lepton1"]]
+        second = second[self._feature_indices["lepton2"]]
+        eventwise = eventwise[self._eventwise_indices.tolist()]
+        if target.numel():
+            target = target[:, self._target_indices]
+        return first, second, eventwise, target, domain_target
+
+    def __getitem__(
+        self, index: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        item = self.dataset[index]
+        return (
+            self._select_pair_item(item)
+            if self._is_pair_dataset
+            else self._select_item(item)
+        )
+
+    def __getitems__(
+        self,
+        indices: list[int],
+        include_target: bool = True,
+        target_only: bool = False,
+    ) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] | list[torch.Tensor]:
+        if self._is_pair_dataset:
+            items = self.dataset.__getitems__(indices, target_only=target_only)
+        else:
+            items = self.dataset.__getitems__(
+                indices,
+                include_target=include_target,
+                target_only=target_only,
+            )
+        if target_only:
+            return [
+                item[:, self._target_indices] if self._is_pair_dataset
+                else item[self._target_indices]
+                for item in items
+            ]
+        return [
+            self._select_pair_item(item) if self._is_pair_dataset
+            else self._select_item(item)
+            for item in items
+        ]
+
+    def close(self) -> None:
+        self.dataset.close()
+
+
 class npyDataset(Dataset):
     """
     Simple dataset class for loading data from a NumPy .npy file. Each row in the .npy file is expected to contain features and a target variable, with the last column representing the target.
@@ -1292,6 +1544,7 @@ class ZPairDataset(H5EgammaDataset):
         self,
         indices : list[int],
         target_only : bool = False,
+        include_target : bool = True,
     ) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] | list[torch.Tensor]:
         """
         Main read function for the fully batched dataset. It groups the indices by file, reads the aligned rows in batches, and returns a list of feature-target pairs for each lepton pair.

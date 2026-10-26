@@ -132,9 +132,9 @@ def h5_to_csv(
     y_source : str, 
     y_field : str, 
     exclude_features : list[str] | None = None, 
-    exclude_fields : list[str] | None = None, 
+    exclude_fields : dict[str, list[str]] | None = None,
     include_features : list[str] | None = None, 
-    include_fields : list[str] | None = None, 
+    include_fields : dict[str, list[str]] | None = None,
     batch_size : int = 256, 
     sample_size : int = 100_000, 
     mix_h5_file_path : str | Path | None = None, 
@@ -152,9 +152,9 @@ def h5_to_csv(
 
     Keywords:
     - exclude_features (list of str): List of feature names to exclude from the output. Default is None, which means no features are excluded.
-    - exclude_fields (list of str): List of field names to exclude from the output. Default is None, which means no fields are excluded.
+    - exclude_fields (dict): Feature names mapped to field names to exclude. Default is None, which means no fields are excluded.
     - include_features (list of str): List of feature names to include in the output. If specified, only these features will be included. Default is None, which means all features are included.
-    - include_fields (list of str): List of field names to include in the output. If specified, only these fields will be included. Default is None, which means all fields are included.
+    - include_fields (dict): Feature names mapped to field names to include. Features not listed retain all fields. Default is None, which means all fields are included.
     - batch_size (int): The number of samples to process in each batch. Default is 256.
     - sample_size (int): The number of samples to use for calculating mean and standard deviation for normalization. Default is 100,000.
     - mix_h5_file_path (str or Path): Path to a second set of H5 files to mix with the primary dataset. Default is None, which means no mixing is performed.
@@ -223,9 +223,9 @@ def h5_to_npy(h5_file_path : str | Path,
     y_source : str, 
     y_field : str, 
     exclude_features : list[str] | None = None, 
-    exclude_fields : list[str] | None = None, 
+    exclude_fields : dict[str, list[str]] | None = None,
     include_features : list[str] | None = None, 
-    include_fields : list[str] | None = None, 
+    include_fields : dict[str, list[str]] | None = None,
     batch_size : int = 256, 
     sample_size : int = 100_000, 
     mix_h5_file_path : str | Path | None = None, 
@@ -243,9 +243,9 @@ def h5_to_npy(h5_file_path : str | Path,
 
     Keywords:
     - exclude_features (list of str): List of feature names to exclude from the output. Default is None.
-    - exclude_fields (list of str): List of field names to exclude from the output. Default is None.
+    - exclude_fields (dict): Feature names mapped to field names to exclude. Default is None.
     - include_features (list of str): List of feature names to include in the output. If specified, only these features will be included. Default is None.
-    - include_fields (list of str): List of field names to include in the output. If specified, only these fields will be included. Default is None.
+    - include_fields (dict): Feature names mapped to field names to include. Features not listed retain all fields. Default is None.
     - batch_size (int): The number of samples to process in each batch. Default is 256.
     - sample_size (int): The number of samples to use for calculating mean and standard deviation for normalization. Default is 100,000.
     - mix_h5_file_path (str or Path): Path to a second set of H5 files to mix with the primary dataset. Default is None.

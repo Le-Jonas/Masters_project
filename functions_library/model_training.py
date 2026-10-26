@@ -608,11 +608,12 @@ def compressed_training_function(
     mix_files : list[str] | None = None,
     mixture_ratio : float = 0.5,
     exclude_features : list[str] | None = None,
-    exclude_fields : list[str] | None = None,
+    exclude_fields : dict[str, list[str]] | None = None,
     y_source : str = "egammas",
     y_field : str = "truthOrigin",
     fallback_source : str | None = None,
     fallback_field : list[str] | None = None,
+    valid_fields : dict[str, list[str]] | None = None,
     batch_size : int = 4096,
     num_workers : int = 8,
     prefetch_factor : int = 2,
@@ -620,13 +621,15 @@ def compressed_training_function(
     pin_memory : bool = True,
     domain_adversary : bool = False,
     gradient_reversal_strength : float = 0.1,
-    domain_loss_weight : float = 0.25,
+    domain_loss_weight : float = 0.20,
     domain_loss_function : Callable | None = None,
-    mixed_target_loss_weight : float = 0.25,
+    mixed_target_loss_weight : float = 0.20,
     binary_target : bool | float = False,
     log_target : bool = False,
     validation_split : float = 0.25,
     sample_size : int = 1000000,
+    use_old_model : torch.nn.Module | bool = False,
+
 
 
 ) -> tuple[torch.nn.Module, list, list]:
@@ -640,6 +643,7 @@ def compressed_training_function(
         fallback_source = fallback_source,
         fallback_field = fallback_field,
         mixture_ratio = mixture_ratio,
+        valid_fields = valid_fields,
     )
 
     means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
@@ -657,6 +661,7 @@ def compressed_training_function(
         fallback_source = fallback_source,
         fallback_field = fallback_field,
         mixture_ratio = mixture_ratio,
+        valid_fields = valid_fields,
     )
 
     val_dataset = dataset_class(
@@ -669,6 +674,7 @@ def compressed_training_function(
         fallback_source = fallback_source,
         fallback_field = fallback_field,
         mixture_ratio = mixture_ratio,
+        valid_fields = valid_fields,
     )
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
@@ -681,12 +687,14 @@ def compressed_training_function(
     particle_size = len(particle_fields) // 2
     if len(particle_fields) % 2 != 0:
         raise ValueError("Pair particle fields are not evenly split between the two particles.")
-
-    model = nn_model(
-        particle_size,
-        len(event_fields),
-        **model_kwargs
-    ).to(device)
+    if use_old_model == False:
+        model = nn_model(
+            particle_size,
+            len(event_fields),
+            **model_kwargs
+        ).to(device)
+    else:
+        model = use_old_model.to(device)
 
     embedding_size = model_kwargs["particle_hidden_sizes"][-1] * 2 + model_kwargs["event_hidden_sizes"][-1]
 
