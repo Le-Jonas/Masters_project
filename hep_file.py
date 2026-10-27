@@ -43,7 +43,7 @@ def main():
         h5_files_egam1[:egam1_split],
         mix_files = h5_files_egam7[:egam7_split],
         exclude_features = ["truth"],
-        exclude_fields = ["truthOrigin", "truthType"],
+        exclude_fields = {"egammas": ["truthOrigin", "truthType"]},
         y_source = "egammas",
         y_field = "truthOrigin",
         mixture_ratio = 0.5
@@ -55,7 +55,7 @@ def main():
         h5_files_egam1[:egam1_split],
         mix_files = h5_files_egam7[:egam7_split],
         exclude_features = ["truth"],
-        exclude_fields = ["truthOrigin", "truthType"],
+        exclude_fields = {"egammas": ["truthOrigin", "truthType"]},
         y_source = "egammas",
         y_field = "truthOrigin",
         mixture_ratio = 0.5
@@ -65,7 +65,7 @@ def main():
         h5_files_egam1[egam1_split:],
         mix_files = h5_files_egam7[egam7_split:],
         exclude_features = ["truth"],
-        exclude_fields = ["truthOrigin", "truthType"],
+        exclude_fields = {"egammas": ["truthOrigin", "truthType"]},
         y_source = "egammas",
         y_field = "truthOrigin",
         mixture_ratio = 0.5
@@ -74,7 +74,7 @@ def main():
     test_dataset = dataset_classes.ZPairDataset(
         h5_files_data,
         exclude_features = ["truth"],
-        exclude_fields = ["truthOrigin", "truthType"],
+        exclude_fields = {"egammas": ["truthOrigin", "truthType"]},
         y_source = None,
         y_field = None,
     )

@@ -137,7 +137,9 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
     mc_dataset = ZPairDataset(mc_files, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = ["truthOrigin", "passid_Medium"], valid_fields = valid_fields)
 
     full_loader = DataLoader(mc_dataset, **dataloader_kwargs)
-    target_loader = DataLoader(_TargetOnlyDataset(mc_dataset), **dataloader_kwargs)
+    target_only_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
+    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 16
+    target_loader = DataLoader(_TargetOnlyDataset(mc_dataset), **target_only_dataloader_kwargs)
 
     truth = []
     pseudo_truth = []
@@ -165,7 +167,7 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
         
     N_tp = np.zeros(n_total)
     N_fp = np.zeros(n_total)
-    prediction_values = np.linspace(-10, 10, n_total)
+    prediction_values = np.linspace(-15, 15, n_total)
     for i in range(n_total):
         predicted_labels = (predictions > prediction_values[i]).astype(bool)
         N_tp[i] = (truth * predicted_labels).sum()
@@ -274,30 +276,109 @@ def _get_totals_from_distribution(
 
     N_tp = np.zeros(n_total)
     N_fp = np.zeros(n_total)
-    prediction_values = np.linspace(-10, 10, n_total)
+    keep_indices = np.zeros(n_total, dtype=bool)
+    prediction_values = np.linspace(-15, 15, n_total)
 
     fit_fail_count = 0
     for i in range(n_total):
         predicted_labels = (predictions > prediction_values[i]).astype(bool)
         z_masses = data_masses[predicted_labels]
         data_size = len(z_masses)
+        if data_size < 1000:
+            continue
+        
         z_masses = z_masses / 1000
         fit_vals = fit_data_to_mc(z_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
         signal_strength = fit_vals[0]
         fit_fail_count += (1-fit_vals[-1])
+        keep_indices[i] = fit_vals[-1] > 0.5
 
         N_tp[i] = signal_strength * data_size
         N_fp[i] = (1 - signal_strength) * data_size
     print(f"Fit failed for {fit_fail_count} out of {n_total} thresholds.")
+    N_tp = N_tp[keep_indices]
+    N_fp = N_fp[keep_indices]
 
     return N_tp, N_fp
 
+def _get_cut_totals_from_distribution(
+    mc_files_path : list[Path],
+    data_files_path : list[Path],
+    mc_signal_hist : ArrayLike, 
+    mc_background_hist : ArrayLike, 
+    mc_masses : ArrayLike,
+    data_masses : ArrayLike,
+    dataloader_kwargs : dict,
+    valid_fields : dict[str, list[str]],
+    bins : int | list[float] = 1000,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
+
+    Arguments:
+    - mc_files_path: A list of paths to the H5 files containing the Monte Carlo data.
+    - data_files_path: A list of paths to the H5 files containing the data.
+    - mc_signal_hist: The Monte Carlo signal histogram.
+    - mc_background_hist: The Monte Carlo background histogram.
+    - mc_masses: The Z boson masses from the Monte Carlo data.
+    - data_masses: The Z boson masses from the data.
+    - dataloader_kwargs: A dictionary of keyword arguments to pass to the DataLoader constructor
+    - valid_fields: A dictionary of needed non_nan fields for the dataset.
+
+    Keywords:
+    - bins: The number of bins or the bin edges for the histograms. Default is 1000.
+
+    Returns:
+    - N_tp: An array containing the number of true positives for each threshold.
+    - N_fp: An array containing the number of false positives for each threshold.
+    """
+    target_only_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
+    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 16
+    
+    dataset = ZPairDataset(mc_files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = "passid_Medium", valid_fields = valid_fields)
+    loader = DataLoader(_TargetOnlyDataset(dataset), **target_only_dataloader_kwargs)
+    mc_predictions = []
+    for target in loader:
+        mc_predictions.append(target[:, 0, 0] * target[:, 1, 0])
+    mc_predictions = np.concatenate(mc_predictions)
+
+    dataset = ZPairDataset(data_files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = "passid_Medium", valid_fields = valid_fields)
+    loader = DataLoader(_TargetOnlyDataset(dataset), **target_only_dataloader_kwargs)
+    data_predictions = []
+    for target in loader:
+        data_predictions.append(target[:, 0, 0] * target[:, 1, 0])
+    data_predictions = np.concatenate(data_predictions)
+    dataset.close()
+
+    mc_predictions = mc_predictions.astype(bool)
+    data_predictions = data_predictions.astype(bool)
+
+    z_masses_mc = mc_masses[mc_predictions]
+    mc_size = len(z_masses_mc)
+    z_masses_mc = z_masses_mc / 1000
+    fit_vals = fit_data_to_mc(z_masses_mc, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+    signal_strength = fit_vals[0]
+
+    N_tp_mc = signal_strength * mc_size
+    N_fp_mc = (1 - signal_strength) * mc_size
+
+    z_masses_data = data_masses[data_predictions]
+    data_size = len(z_masses_data)
+    z_masses_data = z_masses_data / 1000
+    fit_vals = fit_data_to_mc(z_masses_data, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+    signal_strength = fit_vals[0]
+
+    N_tp_data = signal_strength * data_size
+    N_fp_data = (1 - signal_strength) * data_size
+
+    return N_tp_mc, N_fp_mc, N_tp_data, N_fp_data
+
 def _load_z_masses_from_files(z_masses_path : list[Path], dataloader_kwargs : dict, valid_fields : dict) -> tuple[np.ndarray]:
 
-    local_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
-    local_dataloader_kwargs["batch_size"] = local_dataloader_kwargs["batch_size"] * 16
+    target_only_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
+    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 16
     dataset = ZPairDataset(z_masses_path, exclude_features=["truth", "cells", "tracks"], y_source = "egammas", y_field = ["pt", "eta", "phi", "e"], valid_fields = valid_fields)
-    dataloader = DataLoader(_TargetOnlyDataset(dataset), **dataloader_kwargs)
+    dataloader = DataLoader(_TargetOnlyDataset(dataset), **target_only_dataloader_kwargs)
 
     z_masses = []
     expected_batches = len(dataloader)
@@ -633,11 +714,18 @@ def find_Z_peak_pairs(
                     print(f"Warning: Indexes are not strictly increasing in file {file}. Found {len(index_s)} decreasing indexes at positions {index_s}.")
                 for i in index_s:
                     indexes[i + 1:] += (indexes[i] - indexes[i + 1] + n_egammas[i])
-
-            pt = f[name_feature]["pt"]
-            eta = f[name_feature]["eta"]
-            phi = f[name_feature]["phi"]
-            e = f[name_feature]["e"]
+            
+            try:
+                pt = f["truth"]["pt"]
+                eta = f["truth"]["eta"]
+                phi = f["truth"]["phi"]
+                e = f["truth"]["e"]
+                
+            except KeyError:                
+                pt = f[name_feature]["pt"]
+                eta = f[name_feature]["eta"]
+                phi = f[name_feature]["phi"]
+                e = f[name_feature]["e"]
 
             data = {"pt": pt, "eta": eta, "phi": phi, "e": e}
 
@@ -880,8 +968,21 @@ def create_pseudo_roc_curve(
         n_total=n_total,
         sample_size=sample_size
     )
+
+    N_tp_cut_mc, N_fp_cut_mc, N_tp_cut_data, N_fp_cut_data = _get_cut_totals_from_distribution(
+        mc_files,
+        data_files,
+        sig_z_mass_hist,
+        bkg_z_mass_hist,
+        mc_z_masses,
+        data_z_masses,
+        dataloader_kwargs,
+        valid_fields,
+        bins=bins,
+    )
+
     print(f"Pseudo ROC curve creation complete. Returning results.")
-    return N_tp_mc, N_fp_mc, N_tp_fit_mc, N_fp_fit_mc, N_tp_fit_data, N_fp_fit_data, N_tp_cut, N_fp_cut
+    return (N_tp_mc, N_fp_mc), (N_tp_cut, N_fp_cut), (N_tp_fit_mc, N_fp_fit_mc), (N_tp_cut_mc, N_fp_cut_mc), (N_tp_fit_data, N_fp_fit_data), (N_tp_cut_data, N_fp_cut_data)
 
 
 

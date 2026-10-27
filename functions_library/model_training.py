@@ -188,6 +188,38 @@ def _domain_logits(
         embedding = gradient_reversal(embedding)
     return domain_adversary(embedding)
 
+def _prepare_z_targets(targets : torch.Tensor) -> torch.Tensor:
+    """
+    Prepare z targets for training by converting them to a z target format.
+
+    Arguments:
+    - targets (torch.Tensor): The target tensor to prepare.
+
+    Returns:
+    - torch.Tensor: The prepared z target tensor.
+    """
+    if targets.ndim < 2 or targets.shape[-1] < 2:
+        raise ValueError(
+            "z_target requires the last dimension of targets to have at least 2 elements."
+        )
+    pt1 = targets[:, 0, 0]
+    pt2 = targets[:, 1, 0]
+    eta1 = targets[:, 0, 1]
+    eta2 = targets[:, 1, 1]
+    phi1 = targets[:, 0, 2]
+    phi2 = targets[:, 1, 2]
+    e1 = targets[:, 0, 3]
+    e2 = targets[:, 1, 3]
+
+    x1 = pt1 * torch.cos(phi1)
+    y1 = pt1 * torch.sin(phi1)
+    z1 = pt1 * torch.sinh(eta1)
+    x2 = pt2 * torch.cos(phi2)
+    y2 = pt2 * torch.sin(phi2)
+    z2 = pt2 * torch.sinh(eta2)
+    z_mass = torch.sqrt(torch.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
+    return z_mass
+
 def train_model(
         model : torch.nn.Module, 
         optimizer : torch.optim.Optimizer, 
@@ -207,6 +239,7 @@ def train_model(
         domain_loss_weight : float = 1.0,
         mixed_target_loss_weight : float = 0.25,
         discard_remainder : bool = True,
+        z_target : bool = False,
     ) -> tuple[torch.nn.Module, list, list]:
     """
     Train a PyTorch model using the provided training and validation data loaders, optimizer, and loss function.
@@ -236,6 +269,7 @@ def train_model(
       for samples with domain target 1, whose targets are weak labels.
       Default is 0.25.
     - discard_remainder (bool): Whether to discard rows that do not keep the wanted mixture ratio for the dataset.
+    - z_target (bool): Whether to use a z target for training. This will need the correct y_fields to be set in the dataset. Default is False.
 
     Returns:
     - model (torch.nn.Module): The trained PyTorch model.
@@ -307,10 +341,13 @@ def train_model(
 
             if not torch.isfinite(targets).all():
                 raise ValueError(f"Warning: Non-finite values detected in targets")
+            if z_target:
+                targets = _prepare_z_targets(targets)
             if log_target:
                 targets = torch.log1p(targets)  # Add 1 to avoid log(0)
             if binary_target is not False:
                 targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
+
 
             inputs = _normalize_inputs(inputs, means_i, stds_i)
             eventwise_features = _normalize_inputs(eventwise_features, means_e, stds_e)
@@ -329,6 +366,7 @@ def train_model(
                 domain_targets,
                 mixed_target_loss_weight,
             )
+
             if domain_adversary is not None:
                 if domain_targets is None:
                     raise ValueError(
@@ -382,7 +420,8 @@ def train_model(
             gradient_reversal=gradient_reversal,
             domain_loss_weight=domain_loss_weight,
             mixed_target_loss_weight=mixed_target_loss_weight,
-            domain=domain
+            domain=domain,
+            z_target=z_target
         )
         val_losses.append(val_loss)
         train_losses.append(epoch_loss)
@@ -423,6 +462,7 @@ def validate_model(
         gradient_reversal : torch.nn.Module | None = None,
         domain_loss_weight : float = 1.0,
         mixed_target_loss_weight : float = 0.25,
+        z_target : bool = False
         ) -> float:
     """
     Validate a PyTorch model using the provided validation data loader and loss function.
@@ -446,6 +486,7 @@ def validate_model(
     - domain_loss_weight (float): Weight of the domain loss. Default is 1.0.
     - mixed_target_loss_weight (float): Relative weight for the physics loss
       for domain target 1, whose targets are weak labels. Default is 0.25.
+    - z_target (bool): Whether to use a z target for validation. This will need the correct y_fields to be set in the dataset. Default is False.
 
     Returns:
     - float: The average validation loss over the entire validation dataset.
@@ -480,6 +521,8 @@ def validate_model(
         expected_batches = len(val_loader)
         for batch, data in enumerate(val_loader):
             inputs, event_features, targets, domain_targets = _tuple_unpack_to_device(data, device)
+            if z_target:
+                targets = _prepare_z_targets(targets)
             if log_target:
                 targets = torch.log1p(targets)
             if binary_target is not False:
@@ -583,17 +626,27 @@ def predict(
 
                 outputs = model(*inputs, event_features)
                 outputs = outputs.to(dtype=torch.float32)
+
                 if log_target:
                     if outputs.shape[-1] == 1:
                         outputs = torch.expm1(outputs)
                     elif outputs.shape[-1] % 2 == 0:
-                        outputs = outputs.clone()
-                        outputs[..., 0::2] = torch.expm1(outputs[..., 0::2])
+                        mean_z = outputs[..., 0::2].clone()
+                        var_z = torch.exp(outputs[..., 1::2].clone())
+                        mean_y = torch.exp(mean_z + 0.5 * var_z) - 1
+                        std_y = torch.sqrt(torch.exp(2 * mean_z + var_z) * (torch.exp(var_z) - 1))
+                        outputs = torch.cat((mean_y, std_y), dim=-1)
                     else:
                         raise ValueError(
                             "log_target prediction expects one output or "
                             "alternating mean/log-variance outputs."
                         )
+                elif outputs.shape[-1] % 2 == 0:
+                    means = outputs[..., 0::2].clone()
+                    log_vars = outputs[..., 1::2].clone()
+                    stds = torch.exp(0.5 * log_vars)
+                    outputs = torch.cat((means, stds), dim=-1)
+
                 predictions.append(outputs.cpu().numpy())
                 print(300*" ", end='\r')  # Clear the line
                 print(f"Prediction batch {batch+1}/{expected_batches}: Predictions shape = {outputs.shape}", end='\r')
@@ -639,6 +692,7 @@ def compressed_training_function(
     use_old_model : torch.nn.Module | bool = False,
     discard_remainder : bool = True,
     domain : str = "bool",
+    z_target : bool = False
 
 
 
@@ -736,6 +790,7 @@ def compressed_training_function(
                                            domain_loss_weight = domain_loss_weight, 
                                            mixed_target_loss_weight = mixed_target_loss_weight,
                                            discard_remainder = discard_remainder,
-                                           domain = domain
+                                           domain = domain,
+                                           z_target = z_target
                                            )
     return model, train_losses, val_losses
