@@ -592,6 +592,7 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
     - means: A tensor containing the mean of the target.
     - stds: A tensor containing the standard deviation of the target.
     """
+    batch_size = batch_size * 16 #Increased batch size for target calculations because of the low column amount.
     num_batches = sample_size // batch_size
     num_avaliable_batches = len(dataset) // batch_size
     if num_batches > num_avaliable_batches:
@@ -609,7 +610,7 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
     if num_workers:
         loader = DataLoader(
             _TargetOnlyDataset(dataset),
-            batch_size=batch_size*16,
+            batch_size=batch_size,
             sampler=indices.tolist(),
             num_workers=num_workers,
             persistent_workers=persistent_workers,
@@ -621,7 +622,7 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
 
 
     batches = loader if loader is not None else (
-        _TargetOnlyDataset(dataset).__getitems__(indices[start:start + batch_size], include_target=False)
+        dataset.__getitems__(indices[start:start + batch_size], target_only=True)
         for start in range(0, len(indices), batch_size)
     )
     for batch_number, sampled_data in enumerate(batches):
@@ -653,7 +654,7 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
         count += finite.sum(dim=0)
 
         print(300*" ", end='\r')  # Clear the line
-        print(f"Calculating mean and std for normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
+        print(f"Calculating mean and std for target normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
 
     print(300*" ", end='\r')  # Clear the line
     means = target_sum / count

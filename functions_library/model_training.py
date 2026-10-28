@@ -475,7 +475,8 @@ def train_model(
             domain_loss_weight=domain_loss_weight,
             mixed_target_loss_weight=mixed_target_loss_weight,
             domain=domain,
-            z_target=z_target
+            z_target=z_target,
+            norm_target=norm_target
         )
         val_losses.append(val_loss)
         train_losses.append(epoch_loss)
@@ -765,6 +766,20 @@ def compressed_training_function(
     means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
     
     if norm_target is not None:
+        if z_target:
+            mean_dataset = dataset_classes.ZPairDataset(
+                h5_files[:train_size_egam],
+                mix_files = mix_files[:train_size_data],
+                exclude_features = exclude_features,
+                exclude_fields = exclude_fields,
+                y_source = y_source,
+                y_field = y_field,
+                fallback_source = fallback_source,
+                fallback_field = fallback_field,
+                mixture_ratio = mixture_ratio,
+                valid_fields = valid_fields,
+            )
+            
         norm_target = misc_functions.compute_target_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, log_target=log_target, z_target=z_target)
 
 

@@ -753,7 +753,7 @@ class H5EgammaDataset(Dataset):
         h5_file : h5py.File,
         indices : ArrayLike,
         include_target : bool = True,
-        prefer_contiguous_span : bool = False,
+        prefer_contiguous_span : bool = True,
         read_features : bool = True,
     ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
         """
@@ -785,7 +785,7 @@ class H5EgammaDataset(Dataset):
             last = int(sorted_indices[-1]) + 1
             relative_indices = sorted_indices - first
             span_size = last - first
-            if span_size <= max(len(sorted_indices) * 8, len(sorted_indices) + 1024):
+            if span_size <= max(len(sorted_indices) * 16, len(sorted_indices) + 1024):
                 rows = (
                     {
                         name: h5_file[name][first:last][relative_indices]
@@ -1088,6 +1088,28 @@ class H5EgammaDataset(Dataset):
         batch = [None] * len(indices)
         for file_index, positions in grouped.items():
             h5_file = self._get_handle(file_index)
+            local_indices = np.array([local_index for _, local_index in positions])
+            target_source, target_fields = _resolve_target_source_and_fields(
+                h5_file,
+                self.y_source,
+                self.y_fields,
+                self.fallback_source,
+                self.fallback_field,
+            )
+            if target_only and target_source != "eventwise":
+                _, targets, sort_order = self._read_aligned_rows(
+                    h5_file,
+                    local_indices,
+                    include_target=True,
+                    prefer_contiguous_span=True,
+                    read_features=False,
+                )
+                for sorted_position, original_position in enumerate(np.argsort(sort_order)):
+                    batch[positions[original_position][0]] = torch.from_numpy(
+                        np.asarray(targets[sorted_position], dtype=np.float32)
+                    )
+                continue
+
             first_indices, counts, count_field = self._get_eventwise_metadata(
                 file_index, h5_file
             )
@@ -1104,7 +1126,6 @@ class H5EgammaDataset(Dataset):
             eventwise[count_field] = counts
             if start_field is not None:
                 eventwise[start_field] = first_indices
-            local_indices = np.array([local_index for _, local_index in positions])
             rows, target, sort_order = self._read_aligned_rows(
                 h5_file,
                 local_indices,
@@ -1114,35 +1135,27 @@ class H5EgammaDataset(Dataset):
             sorted_indices = np.sort(local_indices)
             event_indices = np.searchsorted(first_indices, sorted_indices, side="right") - 1
             if target_only:
-                if self.y_source == "eventwise":
-                    target_source, target_fields = _resolve_target_source_and_fields(
-                        h5_file,
-                        self.y_source,
-                        self.y_fields,
-                        self.fallback_source,
-                        self.fallback_field,
+                if target_source == "eventwise" and target_fields:
+                    eventwise_rows = self._read_eventwise_rows(
+                        h5_file, np.unique(event_indices)
                     )
-                    if target_source == "eventwise" and target_fields:
-                        eventwise_rows = self._read_eventwise_rows(
-                            h5_file, np.unique(event_indices)
-                        )
-                        eventwise_targets = {
-                            int(event_index): np.asarray(
-                                [
-                                    eventwise_rows[position][field]
-                                    for field in target_fields
-                                ],
-                                dtype=np.float32,
-                            )
-                            for position, event_index in enumerate(np.unique(event_indices))
-                        }
-                        target = np.stack(
+                    eventwise_targets = {
+                        int(event_index): np.asarray(
                             [
-                                eventwise_targets[int(event_index)]
-                                for event_index in event_indices
+                                eventwise_rows[position][field]
+                                for field in target_fields
                             ],
-                            axis=0,
+                            dtype=np.float32,
                         )
+                        for position, event_index in enumerate(np.unique(event_indices))
+                    }
+                    target = np.stack(
+                        [
+                            eventwise_targets[int(event_index)]
+                            for event_index in event_indices
+                        ],
+                        axis=0,
+                    )
                 for sorted_position, original_position in enumerate(np.argsort(sort_order)):
                     batch[positions[original_position][0]] = torch.from_numpy(
                         np.asarray(target[sorted_position], dtype=np.float32)
