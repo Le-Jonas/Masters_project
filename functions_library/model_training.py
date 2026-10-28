@@ -220,6 +220,52 @@ def _prepare_z_targets(targets : torch.Tensor) -> torch.Tensor:
     z_mass = torch.sqrt(torch.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
     return z_mass
 
+def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_target: tuple | None, log_target: bool) -> torch.Tensor:
+    """
+    Prepare the outputs of the model for prediction by applying inverse normalization and transformations based on the provided flags.
+
+    Arguments:
+    - outputs (torch.Tensor): The output tensor from the model.
+    - device (torch.device): The device to move the outputs to.
+    - norm_target (tuple or None): A tuple containing the mean and standard deviation for target normalization. If provided, the outputs will be denormalized.
+    - log_target (bool): Whether to apply an exponential transformation to the outputs to reverse a logarithmic transformation applied during training.
+
+    Returns:
+    - torch.Tensor: The prepared output tensor for prediction.
+    """
+    if norm_target:
+        mean_t, std_t = _move_to_device(norm_target, device)
+        if outputs.shape[-1] == 1:
+            outputs = outputs * std_t + mean_t
+        elif outputs.shape[-1] % 2 == 0:
+            means = outputs[..., 0::2].clone()
+            log_vars = outputs[..., 1::2].clone()
+            means = means * std_t + mean_t
+            log_vars = log_vars + 2 * torch.log(std_t)
+            outputs = torch.cat((means, log_vars), dim=-1)
+
+    if log_target:
+        if outputs.shape[-1] == 1:
+            outputs = torch.expm1(outputs)
+        elif outputs.shape[-1] % 2 == 0:
+            mean_z = outputs[..., 0::2].clone()
+            var_z = torch.exp(outputs[..., 1::2].clone())
+            mean_y = torch.exp(mean_z + 0.5 * var_z) - 1
+            std_y = torch.sqrt(torch.exp(2 * mean_z + var_z) * (torch.exp(var_z) - 1))
+            outputs = torch.cat((mean_y, std_y), dim=-1)
+        else:
+            raise ValueError(
+                "log_target prediction expects one output or "
+                "alternating mean/log-variance outputs."
+            )
+        
+    elif outputs.shape[-1] % 2 == 0:
+        means = outputs[..., 0::2].clone()
+        log_vars = outputs[..., 1::2].clone()
+        stds = torch.exp(0.5 * log_vars)
+        outputs = torch.cat((means, stds), dim=-1)
+    return outputs
+
 def train_model(
         model : torch.nn.Module, 
         optimizer : torch.optim.Optimizer, 
@@ -232,6 +278,8 @@ def train_model(
         stds : tuple | None = None, 
         log_target : bool = False, 
         binary_target : bool | float = False,
+        z_target : bool = False,
+        norm_target : tuple | None = None,
         domain : str = "bool",
         domain_adversary : torch.nn.Module | None = None,
         domain_loss_function : Callable | None = None,
@@ -239,7 +287,9 @@ def train_model(
         domain_loss_weight : float = 1.0,
         mixed_target_loss_weight : float = 0.25,
         discard_remainder : bool = True,
-        z_target : bool = False,
+        periodic_save_interval : int | None = None,
+        periodic_save_path : str | None = None
+
     ) -> tuple[torch.nn.Module, list, list]:
     """
     Train a PyTorch model using the provided training and validation data loaders, optimizer, and loss function.
@@ -270,6 +320,7 @@ def train_model(
       Default is 0.25.
     - discard_remainder (bool): Whether to discard rows that do not keep the wanted mixture ratio for the dataset.
     - z_target (bool): Whether to use a z target for training. This will need the correct y_fields to be set in the dataset. Default is False.
+    - norm_target (tuple): A tuple containing the mean and standard deviation for target normalization. Default is None.
 
     Returns:
     - model (torch.nn.Module): The trained PyTorch model.
@@ -347,6 +398,9 @@ def train_model(
                 targets = torch.log1p(targets)  # Add 1 to avoid log(0)
             if binary_target is not False:
                 targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
+            if norm_target:
+                mean_t, std_t = _move_to_device(norm_target, device)
+                targets = (targets - mean_t) / std_t
 
 
             inputs = _normalize_inputs(inputs, means_i, stds_i)
@@ -437,6 +491,11 @@ def train_model(
                     domain_adversary.state_dict()
                 )
 
+        if periodic_save_interval is not None and periodic_save_path is not None:
+            if (epoch + 1) % periodic_save_interval == 0:
+                torch.save(best_model_state, periodic_save_path)
+                print(f"Model saved at epoch {epoch + 1} to {periodic_save_path}")
+
     # Load the best model state before returning
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
@@ -462,7 +521,8 @@ def validate_model(
         gradient_reversal : torch.nn.Module | None = None,
         domain_loss_weight : float = 1.0,
         mixed_target_loss_weight : float = 0.25,
-        z_target : bool = False
+        z_target : bool = False,
+        norm_target : tuple | None = None
         ) -> float:
     """
     Validate a PyTorch model using the provided validation data loader and loss function.
@@ -510,7 +570,7 @@ def validate_model(
 
     # Validation phase
     model.eval()
-    if domain_adversary is not None:
+    if domain_adversary:
         domain_adversary.eval()
     val_loss = 0.0
     samples_seen = 0
@@ -525,8 +585,11 @@ def validate_model(
                 targets = _prepare_z_targets(targets)
             if log_target:
                 targets = torch.log1p(targets)
-            if binary_target is not False:
+            if binary_target:
                 targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
+            if norm_target:
+                mean_t, std_t = _move_to_device(norm_target, device)
+                targets = (targets - mean_t) / std_t
 
             if not torch.isfinite(targets).all():
                 raise ValueError(f"Warning: Non-finite values detected in targets")
@@ -586,7 +649,8 @@ def predict(
     device : str | torch.device = 'cpu', 
     means : tuple | None = None, 
     stds : tuple | None = None, 
-    log_target : bool = False
+    log_target : bool = False,
+    norm_target : tuple | None = None,
 ) -> np.ndarray:
     """
     Predict using a trained PyTorch model on the provided test data loader.
@@ -627,25 +691,7 @@ def predict(
                 outputs = model(*inputs, event_features)
                 outputs = outputs.to(dtype=torch.float32)
 
-                if log_target:
-                    if outputs.shape[-1] == 1:
-                        outputs = torch.expm1(outputs)
-                    elif outputs.shape[-1] % 2 == 0:
-                        mean_z = outputs[..., 0::2].clone()
-                        var_z = torch.exp(outputs[..., 1::2].clone())
-                        mean_y = torch.exp(mean_z + 0.5 * var_z) - 1
-                        std_y = torch.sqrt(torch.exp(2 * mean_z + var_z) * (torch.exp(var_z) - 1))
-                        outputs = torch.cat((mean_y, std_y), dim=-1)
-                    else:
-                        raise ValueError(
-                            "log_target prediction expects one output or "
-                            "alternating mean/log-variance outputs."
-                        )
-                elif outputs.shape[-1] % 2 == 0:
-                    means = outputs[..., 0::2].clone()
-                    log_vars = outputs[..., 1::2].clone()
-                    stds = torch.exp(0.5 * log_vars)
-                    outputs = torch.cat((means, stds), dim=-1)
+                outputs = _prepare_predict_outputs(outputs, device, norm_target, log_target)
 
                 predictions.append(outputs.cpu().numpy())
                 print(300*" ", end='\r')  # Clear the line
@@ -692,14 +738,20 @@ def compressed_training_function(
     use_old_model : torch.nn.Module | bool = False,
     discard_remainder : bool = True,
     domain : str = "bool",
-    z_target : bool = False
+    z_target : bool = False,
+    norm_target : bool | None = None,
+    periodic_save_interval : int | None = None,
+    periodic_save_path : str | None = None,
 
 
 
 ) -> tuple[torch.nn.Module, list, list]:
+    train_size_egam = int((1 - validation_split) * len(h5_files))
+    train_size_data = int((1 - validation_split) * len(mix_files))
+
     mean_dataset = dataset_classes.H5EgammaDataset(
-        h5_files,
-        mix_files = mix_files,
+        h5_files[:train_size_egam],
+        mix_files = mix_files[:train_size_data],
         exclude_features = exclude_features,
         exclude_fields = exclude_fields,
         y_source = y_source,
@@ -711,9 +763,11 @@ def compressed_training_function(
     )
 
     means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+    
+    if norm_target is not None:
+        norm_target = misc_functions.compute_target_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, log_target=log_target, z_target=z_target)
 
-    train_size_egam = int((1 - validation_split) * len(h5_files))
-    train_size_data = int((1 - validation_split) * len(mix_files))
+
 
     train_dataset = dataset_class(
         h5_files[:train_size_egam],
@@ -791,6 +845,9 @@ def compressed_training_function(
                                            mixed_target_loss_weight = mixed_target_loss_weight,
                                            discard_remainder = discard_remainder,
                                            domain = domain,
-                                           z_target = z_target
+                                           z_target = z_target,
+                                           norm_target = norm_target,
+                                           periodic_save_interval = periodic_save_interval,
+                                           periodic_save_path = periodic_save_path
                                            )
     return model, train_losses, val_losses

@@ -59,7 +59,7 @@ def _h5_files_from_path(path : str | Path) -> list[Path]:
         return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
     raise FileNotFoundError(f"H5 path does not exist: {path}")
 
-def _compute_Z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndarray[np.float64], phi1 : float | np.ndarray[np.float64], e1 : float | np.ndarray[np.float64], pt2 : float | np.ndarray[np.float64], eta2 : float | np.ndarray[np.float64], phi2 : float | np.ndarray[np.float64], e2 : float | np.ndarray[np.float64]) -> float | np.ndarray[np.float64]:
+def _compute_z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndarray[np.float64], phi1 : float | np.ndarray[np.float64], e1 : float | np.ndarray[np.float64], pt2 : float | np.ndarray[np.float64], eta2 : float | np.ndarray[np.float64], phi2 : float | np.ndarray[np.float64], e2 : float | np.ndarray[np.float64]) -> float | np.ndarray[np.float64]:
     """
     Given the transverse momentum (pt), pseudorapidity (eta), azimuthal angle (phi), and energy (e) of two particles, compute the invariant mass of the Z boson formed by these two particles.
 
@@ -78,6 +78,75 @@ def _compute_Z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndar
     z2 = pt2 * np.sinh(eta2)
     z_mass = np.sqrt(np.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
     return z_mass
+
+def _compute_z_mass_with_error(p1_data : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p1_error : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p2_data : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p2_error : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Given the transverse momentum (pt), pseudorapidity (eta), azimuthal angle (phi), and energy (e) of two particles along with their respective errors, compute the invariant mass of the Z boson formed by these two particles and propagate the errors to estimate the uncertainty in the Z boson mass.
+
+    Arguments:
+    - p1_data: A tuple containing arrays of transverse momentum, pseudorapidity, azimuthal angle, and energy for the first particle.
+    - p1_error: An array of errors corresponding to the first particle's data.
+    - p2_data: A tuple containing arrays of transverse momentum, pseudorapidity, azimuthal angle, and energy for the second particle.
+    - p2_error: An array of errors corresponding to the second particle's data.
+
+    Returns:
+    - z_mass: An array of invariant masses of the Z boson formed by the particle pairs.
+    - z_mass_error: An array of propagated errors corresponding to the Z boson masses.
+    """
+    pt1, eta1, phi1, e1 = p1_data
+    pt2, eta2, phi2, e2 = p2_data
+    pt1_err, eta1_err, phi1_err, e1_err = p1_error
+    pt2_err, eta2_err, phi2_err, e2_err = p2_error
+
+    x1 = pt1 * np.cos(phi1)
+    y1 = pt1 * np.sin(phi1)
+    z1 = pt1 * np.sinh(eta1)
+    x2 = pt2 * np.cos(phi2)
+    y2 = pt2 * np.sin(phi2)
+    z2 = pt2 * np.sinh(eta2)
+
+    z_mass = np.sqrt(np.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
+
+    #My solution to test if AI is correct
+    dx1_dpt1 = np.cos(phi1)
+    dx1_dphi1 = - pt1 * np.sin(phi1)
+    x1_err = np.sqrt((dx1_dpt1 * pt1_err)**2 + (dx1_dphi1 * phi1_err)**2)
+    dx2_dpt2 = np.cos(phi2)
+    dx2_dphi2 = - pt2 * np.sin(phi2)
+    x2_err = np.sqrt((dx2_dpt2 * pt2_err)**2 + (dx2_dphi2 * phi2_err)**2)
+
+    dy1_dpt1 = np.sin(phi1)
+    dy1_dphi1 = pt1 * np.cos(phi1)
+    y1_err = np.sqrt((dy1_dpt1 * pt1_err)**2 + (dy1_dphi1 * phi1_err)**2)
+    dy2_dpt2 = np.sin(phi2)
+    dy2_dphi2 = pt2 * np.cos(phi2)
+    y2_err = np.sqrt((dy2_dpt2 * pt2_err)**2 + (dy2_dphi2 * phi2_err)**2)
+
+    dz1_dpt1 = np.sinh(eta1)
+    dz1_deta1 = pt1 * np.cosh(eta1)
+    z1_err = np.sqrt((dz1_dpt1 * pt1_err)**2 + (dz1_deta1 * eta1_err)**2)
+    dz2_dpt2 = np.sinh(eta2)
+    dz2_deta2 = pt2 * np.cosh(eta2)
+    z2_err = np.sqrt((dz2_dpt2 * pt2_err)**2 + (dz2_deta2 * eta2_err)**2)
+
+    x_sum_err = np.sqrt(x1_err**2 + x2_err**2)
+    y_sum_err = np.sqrt(y1_err**2 + y2_err**2)
+    z_sum_err = np.sqrt(z1_err**2 + z2_err**2)
+    e_sum_err = np.sqrt(e1_err**2 + e2_err**2)
+
+    dz_dx = -(x1 + x2) / z_mass
+    dz_dy = -(y1 + y2) / z_mass
+    dz_dz = -(z1 + z2) / z_mass
+    dz_de = (e1 + e2) / z_mass
+
+    z_mass_error = np.sqrt(
+        (dz_dx * x_sum_err)**2 +
+        (dz_dy * y_sum_err)**2 +
+        (dz_dz * z_sum_err)**2 +
+        (dz_de * e_sum_err)**2
+    )
+
+    return z_mass, z_mass_error
 
 def _selected_rows_for_files(h5_files : list[Path], mix_files : str | Path | list[Path] | None, mixture_ratio : float, mixture_seed : int) -> tuple[list[Path], list[np.ndarray]]:
     """Return the row selections used by H5EgammaDataset for each file."""
@@ -227,7 +296,7 @@ def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Modu
     phi2 = prediction_dict["phi"][:, 2]
     e2 = prediction_dict["e"][:, 2]
 
-    z_masses = _compute_Z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
+    z_masses = _compute_z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
     return z_masses
 
 def _get_totals_from_distribution(
@@ -383,7 +452,7 @@ def _load_z_masses_from_files(z_masses_path : list[Path], dataloader_kwargs : di
     z_masses = []
     expected_batches = len(dataloader)
     for batch, target in enumerate(dataloader):
-        z_masses.append(_compute_Z_mass(target[:, 0, 0], target[:, 0, 1], target[:, 0, 2], target[:, 0, 3], target[:, 1, 0], target[:, 1, 1], target[:, 1, 2], target[:, 1, 3]))
+        z_masses.append(_compute_z_mass(target[:, 0, 0], target[:, 0, 1], target[:, 0, 2], target[:, 0, 3], target[:, 1, 0], target[:, 1, 1], target[:, 1, 2], target[:, 1, 3]))
         print(300*" ", end='\r')  # Clear the line
         print(f"Getting Z masses with batch {batch + 1}/{expected_batches}", end='\r')
     print(300*" ", end='\r')  # Clear the line
@@ -391,7 +460,7 @@ def _load_z_masses_from_files(z_masses_path : list[Path], dataloader_kwargs : di
     return np.concatenate(z_masses)
 
 
-def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 256, num_workers : int = 0, pin_memory : bool = False, persistent_workers : bool = True) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
+def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 2048, num_workers : int = 4, pin_memory : bool = False, persistent_workers : bool = True) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
     """
     Given a dataset with two feature outputs and a target output and , compute the mean and standard deviation of its features for normalization. The computation is done using a random sample of the dataset to improve efficiency.
 
@@ -400,8 +469,8 @@ def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size 
 
     Keywords:
     - sample_size (int): The number of samples to use for computing the mean and standard deviation. Default is 100,000.
-    - batch_size (int): The number of samples to process in each batch. Default is 256.
-    - num_workers (int): Number of DataLoader worker processes used for reads. Default is 0.
+    - batch_size (int): The number of samples to process in each batch. Default is 2048.
+    - num_workers (int): Number of DataLoader worker processes used for reads. Default is 4.
 
     Returns:
     - means: A tuple containing the mean of the features and the mean of the event features.
@@ -506,6 +575,98 @@ def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size 
     )
 
     return (means.float(), means_event.float()), (stds.float(), stds_event.float())
+
+def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 2048, num_workers : int = 4, pin_memory : bool = False, persistent_workers : bool = True, log_target : bool = False, z_target : bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Given a dataset with two feature outputs and a target output, compute the mean and standard deviation of its target for normalization. The computation is done using a random sample of the dataset to improve efficiency.
+
+    Arguments:
+    - dataset: A dataset object that implements the __getitems__ method to return a tuple of (features, event_features, target) for a given index.
+
+    Keywords:
+    - sample_size (int): The number of samples to use for computing the mean and standard deviation. Default is 100,000.
+    - batch_size (int): The number of samples to process in each batch. Default is 2048.
+    - num_workers (int): Number of DataLoader worker processes used for reads. Default is 4.
+
+    Returns:
+    - means: A tensor containing the mean of the target.
+    - stds: A tensor containing the standard deviation of the target.
+    """
+    num_batches = sample_size // batch_size
+    num_avaliable_batches = len(dataset) // batch_size
+    if num_batches > num_avaliable_batches:
+        raise ValueError(f"Sample size {sample_size} is too large for the dataset size {len(dataset)}. "
+                         f"Maximum sample size is {num_avaliable_batches * batch_size}.")
+    
+    batch_indices = np.random.choice(num_avaliable_batches, num_batches, replace=False)
+    indices = np.concatenate([np.arange(batch * batch_size, (batch + 1) * batch_size) for batch in batch_indices])
+    indices.sort()
+
+    if not isinstance(num_workers, int) or num_workers < 0:
+        raise ValueError("num_workers must be a non-negative integer.")
+
+    loader = None
+    if num_workers:
+        loader = DataLoader(
+            _TargetOnlyDataset(dataset),
+            batch_size=batch_size*16,
+            sampler=indices.tolist(),
+            num_workers=num_workers,
+            persistent_workers=persistent_workers,
+            pin_memory=pin_memory,
+        )
+    
+    target_sum = None
+    target_squared_sum = None
+
+
+    batches = loader if loader is not None else (
+        _TargetOnlyDataset(dataset).__getitems__(indices[start:start + batch_size], include_target=False)
+        for start in range(0, len(indices), batch_size)
+    )
+    for batch_number, sampled_data in enumerate(batches):
+        if loader is None:
+            targets = torch.stack([
+                target_row for target_row in sampled_data
+            ]).double()
+        else:
+            targets = sampled_data
+            targets = targets.double()
+
+        if z_target:
+            targets = _compute_z_mass(targets[:, 0, 0], targets[:, 0, 1], targets[:, 0, 2], targets[:, 0, 3], targets[:, 1, 0], targets[:, 1, 1], targets[:, 1, 2], targets[:, 1, 3]).unsqueeze(1)
+        if log_target:
+            targets = torch.log1p(targets)
+
+        start = batch_number * batch_size
+
+        finite = torch.isfinite(targets)
+        safe_targets = torch.where(finite, targets, torch.zeros_like(targets))
+
+        if target_sum is None:
+            target_sum = torch.zeros(targets.shape[1], dtype=torch.float64)
+            target_squared_sum = torch.zeros(targets.shape[1], dtype=torch.float64)
+            count = torch.zeros(targets.shape[1], dtype=torch.float64)
+
+        target_sum += safe_targets.sum(dim=0)
+        target_squared_sum += (safe_targets ** 2).sum(dim=0)
+        count += finite.sum(dim=0)
+
+        print(300*" ", end='\r')  # Clear the line
+        print(f"Calculating mean and std for normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
+
+    print(300*" ", end='\r')  # Clear the line
+    means = target_sum / count
+    variances = target_squared_sum / count - means ** 2
+    stds = torch.sqrt(torch.clamp(variances, min=0))
+
+    stds = torch.where(
+        torch.isfinite(stds) & (stds > 0),
+        stds,
+        torch.ones_like(stds),
+    )
+
+    return (means.float(), stds.float())
 
 
 
@@ -628,7 +789,7 @@ def find_Z_peak(
                 for rows in (first_rows, second_rows)
                 for field in ("pt", "eta", "phi", "e")
             ]
-            z_masses.extend(_compute_Z_mass(
+            z_masses.extend(_compute_z_mass(
                 values[0], values[1], values[2], values[3],
                 values[4], values[5], values[6], values[7],
             ))
@@ -804,7 +965,7 @@ def find_Z_peak_pairs(
                     for rows in (first_rows, second_rows)
                     for field in ("pt", "eta", "phi", "e")
                 ]
-                z_masses.extend(_compute_Z_mass(
+                z_masses.extend(_compute_z_mass(
                     values[0], values[1], values[2], values[3],
                     values[4], values[5], values[6], values[7],
                 ))

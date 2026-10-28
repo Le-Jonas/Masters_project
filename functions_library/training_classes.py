@@ -50,7 +50,7 @@ class GaussianNLLLoss(torch.nn.Module):
                 "target value."
             )
 
-        log_variance = log_variance.clamp(-10.0, 10.0)
+        log_variance = log_variance.clamp(-10.0, 7.0)
         targets = target_values.reshape_as(mean)
         squared_error = (targets - mean).square()
 
