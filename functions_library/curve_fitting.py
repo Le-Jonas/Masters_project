@@ -2,6 +2,7 @@ from iminuit import Minuit
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.signal import fftconvolve
+import matplotlib.pyplot as plt
 
 def fit_function(
     data : ArrayLike, 
@@ -9,6 +10,7 @@ def fit_function(
     function : callable, 
     initial_guess : ArrayLike, 
     limits : ArrayLike | None = None,
+    save_path : str | None = None,
 ) -> tuple[ArrayLike, ArrayLike, float]:
     """
     Fit a function to a histogram of data.
@@ -75,6 +77,28 @@ def fit_function(
     minimizer.errordef = Minuit.LEAST_SQUARES
     minimizer.migrad(ncall=10000)
 
+    if save_path is not None:
+        plt.figure(figsize=(8, 6))
+        plt.errorbar(
+            bin_centers,
+            hist,
+            yerr=hist_errors,
+            fmt="o",
+            color="black",
+            label="Data"
+        )
+        plt.plot(
+            bin_centers,
+            function(bin_centers, *minimizer.values),
+            color="red",
+            label="Fit"
+        )
+        plt.xlabel("x")
+        plt.ylabel("Normalized Count")
+        plt.legend()
+        plt.savefig(save_path)
+        plt.close()
+
     if minimizer.fmin.is_above_max_edm or minimizer.fmin.has_reached_call_limit:
         raise RuntimeError(
             f"Minuit failed to find a minimum: {minimizer.fmin}"
@@ -88,6 +112,7 @@ def fit_data_to_mc(
     MC_bkg : ArrayLike,
     bins : int | ArrayLike,
     premade_hists : bool = False,
+    save_path : str | None = None,
 ) -> tuple[float, float, float]:
     """
     Fit data to a combination of signal and background Monte Carlo simulations.
@@ -150,6 +175,27 @@ def fit_data_to_mc(
     minimizer.errordef = Minuit.LEAST_SQUARES
     minimizer.limits = [(0.0, 1.0)]
     minimizer.migrad(ncall=10000)
+    if save_path is not None:
+        plt.figure(figsize=(8, 6))
+        plt.errorbar(
+            bin_edges[:-1] + bin_widths / 2,
+            hist_data,
+            yerr=data_err,
+            fmt="o",
+            color="black",
+            label="Data"
+        )
+        plt.plot(
+            bin_edges[:-1] + bin_widths / 2,
+            minimizer.values[0] * hist_sig + (1.0 - minimizer.values[0]) * hist_bkg,
+            color="red",
+            label="Fit"
+        )
+        plt.xlabel("Z Mass [GeV (or MeV)]")
+        plt.ylabel("Normalized Count")
+        plt.legend()
+        plt.savefig(save_path)
+        plt.close()
 
     if minimizer.fmin.is_above_max_edm or minimizer.fmin.has_reached_call_limit:
         return float(minimizer.values[0]), float(minimizer.errors[0]), float(minimizer.fval), 0
@@ -226,7 +272,7 @@ def breit_wigner(x : ArrayLike, mass : float, width : float) -> ArrayLike:
         (x - mass) ** 2 + half_width ** 2
     )
 
-def exponential_decay(x : ArrayLike, amplitude : float, decay_constant : float) -> ArrayLike:
+def exponential_decay(x : ArrayLike, amplitude : float, decay_constant : float, x_range : tuple | None = None) -> ArrayLike:
     """
     Exponential decay function.
 
@@ -234,11 +280,29 @@ def exponential_decay(x : ArrayLike, amplitude : float, decay_constant : float) 
     - x (array-like): The input values.
     - amplitude (float): The amplitude of the exponential decay.
     - decay_constant (float): The decay constant of the exponential decay.
+    - x_range (tuple | None): The range of x values to consider. If None, the range is determined from the input values.
 
     Returns:
     - array-like: The values of the exponential decay function at the input values.
     """
-    return amplitude * np.exp(-decay_constant * x)
+    x = np.asarray(x, dtype=float)
+
+    if x_range is not None:
+        x_min, x_max = x_range
+    else:
+        x_min = np.min(x)
+        x_max = np.max(x)
+
+    normalization = (
+        np.exp(-decay_constant * x_min)
+        - np.exp(-decay_constant * x_max)
+    )
+    if normalization == 0:
+        return np.zeros_like(x)
+
+    normalized_decay = decay_constant * np.exp(-decay_constant * x) / normalization
+    return amplitude * normalized_decay
+
 
 def breit_wigner_crystal_ball(
     x : ArrayLike, 
@@ -283,7 +347,8 @@ def breit_wigner_crystal_ball(
     )
 
     result = np.interp(x, convolution_grid, convolution, left=0.0, right=0.0)
-    return amplitude * result
+    result_normalized = result / np.trapezoid(result, x)
+    return amplitude * result_normalized
 
 
 def crystal_ball_double(
@@ -339,21 +404,21 @@ def crystal_ball_double(
 def true_data_fit(
     x : ArrayLike, 
     amplitude_sig : float, 
-    amplitude_bkg : float, 
     mean_bw : float, 
     width_bw : float, 
     sigma_cb : float, 
     alpha_cb : float, 
     n_cb : float, 
     decay_constant : float,
+    x_range : tuple | None = None,
 ) -> ArrayLike:
     """
     Function that combines a Breit-Wigner convolved with a Crystal Ball function and an exponential decay function, weighted by their respective amplitudes.
 
     Arguments:
     - x (array-like): The input values.
-    - amplitude_sig (float): The amplitude of the signal component.
-    - amplitude_bkg (float): The amplitude of the background component.
+    - amplitude_sig (float): The fraction of the signal component. The
+      background fraction is calculated as ``1 - amplitude_sig``.
     - mean_bw (float): The mean of the Breit-Wigner distribution.
     - width_bw (float): The width of the Breit-Wigner distribution.
     - sigma_cb (float): The sigma parameter of the Crystal Ball distribution.
@@ -364,7 +429,9 @@ def true_data_fit(
     Returns:
     - array-like: The values of the fitted distribution at the input values.
     """
+    amplitude_bkg = 1.0 - amplitude_sig
+
     return (
         breit_wigner_crystal_ball(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb)
-        + exponential_decay(x, amplitude_bkg, decay_constant)
+        + exponential_decay(x, amplitude_bkg, decay_constant, x_range=x_range)
     )

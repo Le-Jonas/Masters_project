@@ -5,10 +5,11 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from pathlib import Path
 from numpy.typing import ArrayLike
+import matplotlib.pyplot as plt
 
 from .model_training import predict
 from .dataset_classes import H5EgammaDataset, ZPairDataset, H5EgammaDatasetWrapper
-from .curve_fitting import fit_data_to_mc
+from .curve_fitting import fit_data_to_mc, true_data_fit, fit_function
 
 
 class _FeatureOnlyDataset(Dataset):
@@ -303,14 +304,16 @@ def _get_totals_from_distribution(
     files_path : list[Path],
     model : torch.nn.Module,
     device : torch.device,
-    mc_signal_hist : ArrayLike, 
-    mc_background_hist : ArrayLike, 
     data_masses : ArrayLike,
     dataloader_kwargs : dict,
     valid_fields : dict[str, list[str]],
-    bins : int | list[float] = 1000,
+    mc_signal_hist : ArrayLike | None = None, 
+    mc_background_hist : ArrayLike | None = None,
+    bins : int | list[float] = np.arange(55.05, 135.05, 0.1),
     n_total : int = 200,
     sample_size : int = 100_000,
+    use_fit_template : bool = False,
+    save_namespace : str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
@@ -324,6 +327,7 @@ def _get_totals_from_distribution(
     - data_masses: The Z boson masses from the data.
     - dataloader_kwargs: A dictionary of keyword arguments to pass to the DataLoader constructor
     - valid_fields: A dictionary of needed non_nan fields for the dataset.
+    - use_fit_template: A boolean indicating whether to use template fit. Default is False.
 
     Keywords:
     - bins: The number of bins or the bin edges for the histograms. Default is 1000.
@@ -348,6 +352,11 @@ def _get_totals_from_distribution(
     keep_indices = np.zeros(n_total, dtype=bool)
     prediction_values = np.linspace(-15, 15, n_total)
 
+    if not use_fit_template:
+        def fit_pdf(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
+            return true_data_fit(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
+
+
     fit_fail_count = 0
     for i in range(n_total):
         predicted_labels = (predictions > prediction_values[i]).astype(bool)
@@ -357,7 +366,18 @@ def _get_totals_from_distribution(
             continue
         
         z_masses = z_masses / 1000
-        fit_vals = fit_data_to_mc(z_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+
+        if save_namespace is not None:
+            plot_name = f"fit_{save_namespace}_threshold_{i}.png"
+            plot_path = "../plots/fits/" + plot_name
+        else:
+            plot_path = None
+
+        if use_fit_template:
+            fit_vals = fit_data_to_mc(z_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True, save_path=plot_path)
+        else:
+            fit_vals = fit_function(z_masses, bins, fit_pdf, initial_guess=[0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path)
+        
         signal_strength = fit_vals[0]
         fit_fail_count += (1-fit_vals[-1])
         keep_indices[i] = fit_vals[-1] > 0.5
@@ -373,13 +393,14 @@ def _get_totals_from_distribution(
 def _get_cut_totals_from_distribution(
     mc_files_path : list[Path],
     data_files_path : list[Path],
-    mc_signal_hist : ArrayLike, 
-    mc_background_hist : ArrayLike, 
     mc_masses : ArrayLike,
     data_masses : ArrayLike,
     dataloader_kwargs : dict,
     valid_fields : dict[str, list[str]],
-    bins : int | list[float] = 1000,
+    mc_signal_hist : ArrayLike | None = None, 
+    mc_background_hist : ArrayLike | None = None,
+    use_fit_template : bool = False,
+    bins : int | list[float] = np.arange(55.05, 135.05, 0.1),
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
@@ -422,10 +443,19 @@ def _get_cut_totals_from_distribution(
     mc_predictions = mc_predictions.astype(bool)
     data_predictions = data_predictions.astype(bool)
 
+    if not use_fit_template:
+        def fit_pdf(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
+            return true_data_fit(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
+
+
     z_masses_mc = mc_masses[mc_predictions]
     mc_size = len(z_masses_mc)
     z_masses_mc = z_masses_mc / 1000
-    fit_vals = fit_data_to_mc(z_masses_mc, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+
+    if use_fit_template:
+        fit_vals = fit_data_to_mc(z_masses_mc, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+    else:
+        fit_vals = fit_function(z_masses_mc, bins, fit_pdf, initial_guess=[0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)])
     signal_strength = fit_vals[0]
 
     N_tp_mc = signal_strength * mc_size
@@ -434,7 +464,11 @@ def _get_cut_totals_from_distribution(
     z_masses_data = data_masses[data_predictions]
     data_size = len(z_masses_data)
     z_masses_data = z_masses_data / 1000
-    fit_vals = fit_data_to_mc(z_masses_data, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+
+    if use_fit_template:
+        fit_vals = fit_data_to_mc(z_masses_data, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+    else:
+        fit_vals = fit_function(z_masses_data, bins, fit_pdf, initial_guess=[0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)])
     signal_strength = fit_vals[0]
 
     N_tp_data = signal_strength * data_size
@@ -1036,7 +1070,8 @@ def create_pseudo_roc_curve(
     bins : int | list[float] = 1000,
     n_total : int = 200,
     sample_size : int = 100_000,
-    use_predictions : bool = True
+    use_predictions : bool = True,
+    use_template_fits : bool = True,
 ) -> tuple[np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], int, int]:
     """
     Creates a pseudo ROC curve by computing the number of true positives and true negatives for different prediction thresholds, as well as the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
@@ -1095,25 +1130,31 @@ def create_pseudo_roc_curve(
         mc_z_masses = _load_z_masses_from_files(mc_files, dataloader_kwargs, valid_fields)
         data_z_masses = _load_z_masses_from_files(data_files, dataloader_kwargs, valid_fields)
 
-    print(f"Histogramming the predicted Z masses for precomputed MC files...")
-    temp_z_masses = np.loadtxt(mc_z_masses_path[0], max_rows=1_000_000)
-    sig_z_mass_hist, _ = np.histogram(temp_z_masses / 1000, bins=bins)
-    temp_z_masses = np.loadtxt(mc_z_masses_path[1], max_rows=1_000_000)
-    bkg_z_mass_hist, _ = np.histogram(temp_z_masses / 1000, bins=bins)
+    if use_template_fits:
+        print(f"Histogramming the predicted Z masses for precomputed MC files...")
+        temp_z_masses = np.loadtxt(mc_z_masses_path[0], max_rows=1_000_000)
+        sig_z_mass_hist, _ = np.histogram(temp_z_masses / 1000, bins=bins)
+        temp_z_masses = np.loadtxt(mc_z_masses_path[1], max_rows=1_000_000)
+        bkg_z_mass_hist, _ = np.histogram(temp_z_masses / 1000, bins=bins)
+    else:
+        sig_z_mass_hist, bkg_z_mass_hist = None, None
 
     print(f"Fitting the MC Z mass distributions...")
     N_tp_fit_mc, N_fp_fit_mc = _get_totals_from_distribution(
         mc_files,
         models["origin"],
         device,
-        sig_z_mass_hist,
-        bkg_z_mass_hist,
+
         mc_z_masses,
         dataloader_kwargs,
         valid_fields,
+        sig_hist = sig_z_mass_hist,
+        bkg_hist = bkg_z_mass_hist,
+        use_fit_template = use_template_fits,
         bins=bins,
         n_total=n_total,
-        sample_size=sample_size
+        sample_size=sample_size,
+        save_namespace="MC"
     )
 
     print(f"Fitting the data Z mass distributions...")
@@ -1121,25 +1162,28 @@ def create_pseudo_roc_curve(
         data_files,
         models["origin"],
         device,
-        sig_z_mass_hist,
-        bkg_z_mass_hist,
         data_z_masses,
         dataloader_kwargs,
         valid_fields,
+        sig_hist = sig_z_mass_hist,
+        bkg_hist = bkg_z_mass_hist,
+        use_fit_template = use_template_fits,
         bins=bins,
         n_total=n_total,
-        sample_size=sample_size
+        sample_size=sample_size,
+        save_namespace="Data"
     )
 
     N_tp_cut_mc, N_fp_cut_mc, N_tp_cut_data, N_fp_cut_data = _get_cut_totals_from_distribution(
         mc_files,
         data_files,
-        sig_z_mass_hist,
-        bkg_z_mass_hist,
         mc_z_masses,
         data_z_masses,
         dataloader_kwargs,
         valid_fields,
+        sig_hist = sig_z_mass_hist,
+        bkg_hist = bkg_z_mass_hist,
+        use_fit_template = use_template_fits,
         bins=bins,
     )
 
