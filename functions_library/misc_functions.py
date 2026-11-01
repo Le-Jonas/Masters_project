@@ -361,11 +361,16 @@ def _get_totals_from_distribution(
     for i in range(n_total):
         predicted_labels = (predictions > prediction_values[i]).astype(bool)
         z_masses = data_masses[predicted_labels]
+        z_masses = z_masses / 1000
         data_size = len(z_masses)
         if data_size < 1000:
             continue
+
+        fit_exclusion_mask = (z_masses > bins[0]) & (z_masses < bins[-1])
+        z_masses = z_masses[fit_exclusion_mask]
+        data_fit_size = len(z_masses)
         
-        z_masses = z_masses / 1000
+        
 
         if save_namespace is not None:
             plot_name = f"fit_{save_namespace}_threshold_{i}.png"
@@ -375,18 +380,19 @@ def _get_totals_from_distribution(
 
         if use_fit_template:
             fit_vals = fit_data_to_mc(z_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True, save_path=plot_path)
+            signal_strength = fit_vals[0]
         else:
             fit_vals = fit_function(z_masses, bins, fit_pdf, initial_guess=[0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path)
-        
-        signal_strength = fit_vals[0]
-        fit_fail_count += (1-fit_vals[-1])
+            signal_strength = fit_vals[0][0]
         keep_indices[i] = fit_vals[-1] > 0.5
 
-        N_tp[i] = signal_strength * data_size
-        N_fp[i] = (1 - signal_strength) * data_size
-    print(f"Fit failed for {fit_fail_count} out of {n_total} thresholds.")
+        N_tp[i] = signal_strength * data_fit_size
+        N_fp[i] = data_size - signal_strength * data_fit_size
+    
     N_tp = N_tp[keep_indices]
     N_fp = N_fp[keep_indices]
+
+    print(f"Fit failed for {n_total - keep_indices.sum()} out of {n_total} thresholds.")
 
     return N_tp, N_fp
 
@@ -449,30 +455,41 @@ def _get_cut_totals_from_distribution(
 
 
     z_masses_mc = mc_masses[mc_predictions]
-    mc_size = len(z_masses_mc)
     z_masses_mc = z_masses_mc / 1000
+    mc_size = len(z_masses_mc)
+
+    fit_exclusion_mask = (z_masses_mc > bins[0]) & (z_masses_mc < bins[-1])
+    z_masses_mc = z_masses_mc[fit_exclusion_mask]
+    mc_fit_size = len(z_masses_mc)
 
     if use_fit_template:
         fit_vals = fit_data_to_mc(z_masses_mc, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+        signal_strength = fit_vals[0]
     else:
         fit_vals = fit_function(z_masses_mc, bins, fit_pdf, initial_guess=[0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)])
-    signal_strength = fit_vals[0]
+        signal_strength = fit_vals[0][0]
 
-    N_tp_mc = signal_strength * mc_size
-    N_fp_mc = (1 - signal_strength) * mc_size
+    N_tp_mc = signal_strength * mc_fit_size
+    N_fp_mc = mc_size - signal_strength * mc_fit_size
 
     z_masses_data = data_masses[data_predictions]
-    data_size = len(z_masses_data)
     z_masses_data = z_masses_data / 1000
+    data_size = len(z_masses_data)
+
+    fit_exclusion_mask = (z_masses_data > bins[0]) & (z_masses_data < bins[-1])
+    z_masses_data = z_masses_data[fit_exclusion_mask]
+    data_fit_size = len(z_masses_data)
+    
 
     if use_fit_template:
         fit_vals = fit_data_to_mc(z_masses_data, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
+        signal_strength = fit_vals[0]
     else:
         fit_vals = fit_function(z_masses_data, bins, fit_pdf, initial_guess=[0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)])
-    signal_strength = fit_vals[0]
+        signal_strength = fit_vals[0][0]
 
-    N_tp_data = signal_strength * data_size
-    N_fp_data = (1 - signal_strength) * data_size
+    N_tp_data = signal_strength * data_fit_size
+    N_fp_data = data_size - signal_strength * data_fit_size
 
     return N_tp_mc, N_fp_mc, N_tp_data, N_fp_data
 
@@ -1144,12 +1161,11 @@ def create_pseudo_roc_curve(
         mc_files,
         models["origin"],
         device,
-
         mc_z_masses,
         dataloader_kwargs,
         valid_fields,
-        sig_hist = sig_z_mass_hist,
-        bkg_hist = bkg_z_mass_hist,
+        mc_signal_hist = sig_z_mass_hist,
+        mc_background_hist = bkg_z_mass_hist,
         use_fit_template = use_template_fits,
         bins=bins,
         n_total=n_total,
@@ -1165,8 +1181,8 @@ def create_pseudo_roc_curve(
         data_z_masses,
         dataloader_kwargs,
         valid_fields,
-        sig_hist = sig_z_mass_hist,
-        bkg_hist = bkg_z_mass_hist,
+        mc_signal_hist = sig_z_mass_hist,
+        mc_background_hist = bkg_z_mass_hist,
         use_fit_template = use_template_fits,
         bins=bins,
         n_total=n_total,
@@ -1181,8 +1197,8 @@ def create_pseudo_roc_curve(
         data_z_masses,
         dataloader_kwargs,
         valid_fields,
-        sig_hist = sig_z_mass_hist,
-        bkg_hist = bkg_z_mass_hist,
+        mc_signal_hist = sig_z_mass_hist,
+        mc_background_hist = bkg_z_mass_hist,
         use_fit_template = use_template_fits,
         bins=bins,
     )

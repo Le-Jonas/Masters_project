@@ -238,32 +238,25 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
         if outputs.shape[-1] == 1:
             outputs = outputs * std_t + mean_t
         elif outputs.shape[-1] % 2 == 0:
-            means = outputs[..., 0::2].clone()
-            log_vars = outputs[..., 1::2].clone()
-            means = means * std_t + mean_t
-            log_vars = log_vars + 2 * torch.log(std_t)
-            outputs = torch.cat((means, log_vars), dim=-1)
+            outputs[..., 0::2] = outputs[..., 0::2] * std_t + mean_t
+            outputs[..., 1::2] = outputs[..., 1::2] + 2 * torch.log(std_t)
 
     if log_target:
         if outputs.shape[-1] == 1:
             outputs = torch.expm1(outputs)
         elif outputs.shape[-1] % 2 == 0:
-            mean_z = outputs[..., 0::2].clone()
-            var_z = torch.exp(outputs[..., 1::2].clone())
-            mean_y = torch.exp(mean_z + 0.5 * var_z) - 1
-            std_y = torch.sqrt(torch.exp(2 * mean_z + var_z) * (torch.exp(var_z) - 1))
-            outputs = torch.cat((mean_y, std_y), dim=-1)
+            mean_y = torch.exp(outputs[..., 0::2] + 0.5 * outputs[..., 1::2]) - 1
+            std_y = torch.sqrt(torch.exp(2 * outputs[..., 0::2] + outputs[..., 1::2]) * (torch.exp(outputs[..., 1::2]) - 1))
+            outputs = torch.cat((mean_y[:, 0], std_y[:, 0], mean_y[:, 1], std_y[:, 1]), dim=-1)
         else:
             raise ValueError(
                 "log_target prediction expects one output or "
                 "alternating mean/log-variance outputs."
             )
         
-    elif outputs.shape[-1] % 2 == 0:
-        means = outputs[..., 0::2].clone()
-        log_vars = outputs[..., 1::2].clone()
-        stds = torch.exp(0.5 * log_vars)
-        outputs = torch.cat((means, stds), dim=-1)
+    elif outputs.shape[-1] % 2 == 0 and len(outputs.shape) > 1:
+        outputs[..., 1::2] = torch.exp(0.5 * outputs[..., 1::2])
+
     return outputs
 
 def train_model(
@@ -703,7 +696,6 @@ def predict(
         if dataset is not None and previous_skip_target_reads is not None:
             dataset.skip_target_reads = previous_skip_target_reads
     return np.concatenate(predictions)
-
 
 def compressed_training_function(
     h5_files : list[str],

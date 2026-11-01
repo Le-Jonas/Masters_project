@@ -100,11 +100,12 @@ def fit_function(
         plt.close()
 
     if minimizer.fmin.is_above_max_edm or minimizer.fmin.has_reached_call_limit:
-        raise RuntimeError(
-            f"Minuit failed to find a minimum: {minimizer.fmin}"
-        )
+        return np.asarray(minimizer.values), np.asarray(minimizer.errors), minimizer.fval, 0
+        #raise RuntimeError(
+        #    f"Minuit failed to find a minimum: {minimizer.fmin}"
+        #)
 
-    return np.asarray(minimizer.values), np.asarray(minimizer.errors), minimizer.fval
+    return np.asarray(minimizer.values), np.asarray(minimizer.errors), minimizer.fval, 1
 
 def fit_data_to_mc(
     data : ArrayLike,
