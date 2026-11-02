@@ -220,7 +220,7 @@ def _prepare_z_targets(targets : torch.Tensor) -> torch.Tensor:
     z_mass = torch.sqrt(torch.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
     return z_mass
 
-def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_target: tuple | None, log_target: bool) -> torch.Tensor:
+def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_target: tuple | None, log_target: bool, variance_target: bool) -> torch.Tensor:
     """
     Prepare the outputs of the model for prediction by applying inverse normalization and transformations based on the provided flags.
 
@@ -235,26 +235,36 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
     """
     if norm_target:
         mean_t, std_t = _move_to_device(norm_target, device)
-        if outputs.shape[-1] == 1:
-            outputs = outputs * std_t + mean_t
-        elif outputs.shape[-1] % 2 == 0:
+        if variance_target:
+            if outputs.shape[-1] % 2 != 0:
+                raise ValueError(
+                    "variance_target prediction expects an even number of outputs "
+                    "for alternating mean/log-variance outputs."
+                )
             outputs[..., 0::2] = outputs[..., 0::2] * std_t + mean_t
             outputs[..., 1::2] = outputs[..., 1::2] + 2 * torch.log(std_t)
+        else:
+            outputs = outputs * std_t + mean_t
 
     if log_target:
-        if outputs.shape[-1] == 1:
-            outputs = torch.expm1(outputs)
-        elif outputs.shape[-1] % 2 == 0:
+        if variance_target:
+            if outputs.shape[-1] % 2 != 0:
+                raise ValueError(
+                    "variance_target prediction expects an even number of outputs "
+                    "for alternating mean/log-variance outputs."
+                )
             mean_y = torch.exp(outputs[..., 0::2] + 0.5 * outputs[..., 1::2]) - 1
             std_y = torch.sqrt(torch.exp(2 * outputs[..., 0::2] + outputs[..., 1::2]) * (torch.exp(outputs[..., 1::2]) - 1))
             outputs = torch.cat((mean_y[:, 0], std_y[:, 0], mean_y[:, 1], std_y[:, 1]), dim=-1)
         else:
+            outputs = torch.expm1(outputs)
+
+    elif variance_target:
+        if outputs.shape[-1] % 2 != 0:
             raise ValueError(
-                "log_target prediction expects one output or "
-                "alternating mean/log-variance outputs."
+                "variance_target prediction expects an even number of outputs "
+                "for alternating mean/log-variance outputs."
             )
-        
-    elif outputs.shape[-1] % 2 == 0 and len(outputs.shape) > 1:
         outputs[..., 1::2] = torch.exp(0.5 * outputs[..., 1::2])
 
     return outputs
@@ -645,6 +655,7 @@ def predict(
     stds : tuple | None = None, 
     log_target : bool = False,
     norm_target : tuple | None = None,
+    variance_target : bool = False
 ) -> np.ndarray:
     """
     Predict using a trained PyTorch model on the provided test data loader.
@@ -685,7 +696,7 @@ def predict(
                 outputs = model(*inputs, event_features)
                 outputs = outputs.to(dtype=torch.float32)
 
-                outputs = _prepare_predict_outputs(outputs, device, norm_target, log_target)
+                outputs = _prepare_predict_outputs(outputs, device, norm_target, log_target, variance_target)
 
                 predictions.append(outputs.cpu().numpy())
                 print(300*" ", end='\r')  # Clear the line
@@ -735,6 +746,7 @@ def compressed_training_function(
     norm_target : bool | None = None,
     periodic_save_interval : int | None = None,
     periodic_save_path : str | None = None,
+    variance_target : bool = False
 
 
 
@@ -854,6 +866,7 @@ def compressed_training_function(
                                            domain = domain,
                                            z_target = z_target,
                                            norm_target = norm_target,
+                                           variance_target = variance_target,
                                            periodic_save_interval = periodic_save_interval,
                                            periodic_save_path = periodic_save_path
                                            )

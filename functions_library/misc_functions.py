@@ -71,13 +71,13 @@ def _compute_z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndar
     Returns:
     - z_mass: Value or array of invariant mass(es) of the Z boson(s) formed by the particle pair(s).
     """
-    x1 = pt1 * np.cos(phi1)
-    y1 = pt1 * np.sin(phi1)
-    z1 = pt1 * np.sinh(eta1)
-    x2 = pt2 * np.cos(phi2)
-    y2 = pt2 * np.sin(phi2)
-    z2 = pt2 * np.sinh(eta2)
-    z_mass = np.sqrt(np.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
+    px1 = pt1 * np.cos(phi1)
+    py1 = pt1 * np.sin(phi1)
+    pz1 = pt1 * np.sinh(eta1)
+    px2 = pt2 * np.cos(phi2)
+    py2 = pt2 * np.sin(phi2)
+    pz2 = pt2 * np.sinh(eta2)
+    z_mass = np.sqrt(np.abs((e1 + e2)**2 - (px1 + px2)**2 - (py1 + py2)**2 - (pz1 + pz2)**2))
     return z_mass
 
 def _compute_z_mass_with_error(p1_data : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p1_error : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p2_data : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p2_error : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
@@ -178,7 +178,7 @@ def _selected_rows_for_files(h5_files : list[Path], mix_files : str | Path | lis
     dataset.close()
     return files, valid_rows
 
-def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : torch.device, dataloader_kwargs : dict, valid_fields : dict, n_total : int = 200, sample_size : int = 100_000) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
+def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : torch.device, dataloader_kwargs : dict, valid_fields : dict, n_total : int = 200, sample_size : int = 100_000, z_masses : ArrayLike | None = None, bins : int | list[float] | None = None) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
     """
     Given a model, a full data loader, and a target data loader, compute the total number of true positives and true negatives for different prediction thresholds and the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
 
@@ -208,7 +208,7 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
 
     full_loader = DataLoader(mc_dataset, **dataloader_kwargs)
     target_only_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
-    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 16
+    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 2
     target_loader = DataLoader(_TargetOnlyDataset(mc_dataset), **target_only_dataloader_kwargs)
 
     truth = []
@@ -230,6 +230,13 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
     predictions = predict(model, full_loader, device=device, means=means, stds=stds)
     mc_dataset.close()
 
+    if z_masses is not None:
+        if bins is None or isinstance(bins, int):
+            raise ValueError("Explicit bin edges are required when restricting truth totals by mass.")
+        mass_in_range = (z_masses / 1000 > bins[0]) & (z_masses / 1000 < bins[-1])
+        truth = truth[mass_in_range]
+        pseudo_truth = pseudo_truth[mass_in_range]
+        predictions = predictions[mass_in_range]
 
     cut_labels = (pseudo_truth > 0.5)
     N_tp_cut = (truth * cut_labels).sum()
@@ -357,7 +364,7 @@ def _get_totals_from_distribution(
             return true_data_fit(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
 
 
-    fit_fail_count = 0
+
     for i in range(n_total):
         predicted_labels = (predictions > prediction_values[i]).astype(bool)
         z_masses = data_masses[predicted_labels]
@@ -387,7 +394,7 @@ def _get_totals_from_distribution(
         keep_indices[i] = fit_vals[-1] > 0.5
 
         N_tp[i] = signal_strength * data_fit_size
-        N_fp[i] = data_size - signal_strength * data_fit_size
+        N_fp[i] = data_fit_size - signal_strength * data_fit_size
     
     N_tp = N_tp[keep_indices]
     N_fp = N_fp[keep_indices]
@@ -429,7 +436,7 @@ def _get_cut_totals_from_distribution(
     - N_fp: An array containing the number of false positives for each threshold.
     """
     target_only_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
-    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 16
+    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 2
     
     dataset = ZPairDataset(mc_files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = "passid_Medium", valid_fields = valid_fields)
     loader = DataLoader(_TargetOnlyDataset(dataset), **target_only_dataloader_kwargs)
@@ -470,7 +477,7 @@ def _get_cut_totals_from_distribution(
         signal_strength = fit_vals[0][0]
 
     N_tp_mc = signal_strength * mc_fit_size
-    N_fp_mc = mc_size - signal_strength * mc_fit_size
+    N_fp_mc = mc_fit_size - signal_strength * mc_fit_size
 
     z_masses_data = data_masses[data_predictions]
     z_masses_data = z_masses_data / 1000
@@ -489,14 +496,14 @@ def _get_cut_totals_from_distribution(
         signal_strength = fit_vals[0][0]
 
     N_tp_data = signal_strength * data_fit_size
-    N_fp_data = data_size - signal_strength * data_fit_size
+    N_fp_data = data_fit_size - signal_strength * data_fit_size
 
     return N_tp_mc, N_fp_mc, N_tp_data, N_fp_data
 
 def _load_z_masses_from_files(z_masses_path : list[Path], dataloader_kwargs : dict, valid_fields : dict) -> tuple[np.ndarray]:
 
     target_only_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
-    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 16
+    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 2
     dataset = ZPairDataset(z_masses_path, exclude_features=["truth", "cells", "tracks"], y_source = "egammas", y_field = ["pt", "eta", "phi", "e"], valid_fields = valid_fields)
     dataloader = DataLoader(_TargetOnlyDataset(dataset), **target_only_dataloader_kwargs)
 
@@ -1134,10 +1141,6 @@ def create_pseudo_roc_curve(
     if use_predictions == False:
         valid_fields["egammas"].extend(["pt", "eta", "phi", "e"])
 
-    print(f"Creating pseudo ROC curve with {n_total} thresholds.")
-    print(f"Getting base truth totals for MC files...")
-    N_tp_mc, N_fp_mc, N_tp_cut, N_fp_cut = _get_truth_totals(mc_files, models["origin"], device, dataloader_kwargs, valid_fields, n_total=n_total, sample_size=sample_size)
-
     if use_predictions:
         print(f"Predicting the Z masses for MC and data files...")
         mc_z_masses = _find_predicted_Z_masses(mc_files, models, device, dataloader_kwargs, valid_fields, sample_size=sample_size)
@@ -1146,6 +1149,20 @@ def create_pseudo_roc_curve(
         print(f"Loading the Z masses for MC and data files...")
         mc_z_masses = _load_z_masses_from_files(mc_files, dataloader_kwargs, valid_fields)
         data_z_masses = _load_z_masses_from_files(data_files, dataloader_kwargs, valid_fields)
+
+    print(f"Creating pseudo ROC curve with {n_total} thresholds.")
+    print(f"Getting base truth totals for MC files...")
+    N_tp_mc, N_fp_mc, N_tp_cut, N_fp_cut = _get_truth_totals(
+        mc_files,
+        models["origin"],
+        device,
+        dataloader_kwargs,
+        valid_fields,
+        n_total=n_total,
+        sample_size=sample_size,
+        z_masses=mc_z_masses,
+        bins=bins,
+    )
 
     if use_template_fits:
         print(f"Histogramming the predicted Z masses for precomputed MC files...")
