@@ -383,3 +383,70 @@ def create_path_lists(paths : list[str], outputs : list[str] | None = None, seed
             path_dir[comb_name] = temp_list
 
     return path_dir
+
+import numpy as np
+from numpy.typing import ArrayLike
+
+
+def electron_predictions_to_pair_predictions(
+    electron_predictions: ArrayLike,
+    electron_dataset: _class_.H5EgammaDataset,
+    pair_dataset: _class_.ZPairDataset,
+) -> np.ndarray:
+    """Map [e_num] electron predictions to [z_pair_num, 2] pair predictions."""
+
+    predictions = np.asarray(electron_predictions)
+
+    if predictions.ndim != 1:
+        raise ValueError(
+            f"electron_predictions must have shape [e_num], got {predictions.shape}"
+        )
+
+    if len(predictions) != len(electron_dataset):
+        raise ValueError(
+            f"Expected {len(electron_dataset)} electron predictions, "
+            f"got {len(predictions)}"
+        )
+
+    if list(electron_dataset.files) != list(pair_dataset.files):
+        raise ValueError(
+            "electron_dataset and pair_dataset must use the same files in the same order"
+        )
+
+    pair_predictions = np.empty((len(pair_dataset), 2), dtype=predictions.dtype)
+
+    output_start = 0
+
+    for file_index, pair_rows in enumerate(pair_dataset.pair_rows):
+        pair_count = len(pair_rows)
+        output_end = output_start + pair_count
+
+        if pair_count == 0:
+            continue
+
+        # Raw HDF5 row indices for the two electrons in each pair.
+        first_rows = pair_rows[:, 0]
+        second_rows = pair_rows[:, 1]
+
+        # Convert raw HDF5 rows to filtered local dataset positions.
+        electron_rows = electron_dataset.valid_rows[file_index]
+
+        first_local = np.searchsorted(electron_rows, first_rows)
+        second_local = np.searchsorted(electron_rows, second_rows)
+
+        if not np.all(electron_rows[first_local] == first_rows):
+            raise ValueError("A pair contains an electron absent from electron_dataset")
+        if not np.all(electron_rows[second_local] == second_rows):
+            raise ValueError("A pair contains an electron absent from electron_dataset")
+
+        # Convert local positions to global H5EgammaDataset positions.
+        offset = electron_dataset.offsets[file_index]
+        first_global = offset + first_local
+        second_global = offset + second_local
+
+        pair_predictions[output_start:output_end, 0] = predictions[first_global]
+        pair_predictions[output_start:output_end, 1] = predictions[second_global]
+
+        output_start = output_end
+
+    return pair_predictions

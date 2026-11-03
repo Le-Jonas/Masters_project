@@ -56,6 +56,7 @@ class ParticleOriginNetwork(nn.Module):
         event_size : int,
         particle_hidden_sizes : list[int],
         event_hidden_sizes : list[int],
+        consolidation_hidden_sizes : list[int],
         output_size : int,
     ):
         super().__init__()
@@ -88,15 +89,39 @@ class ParticleOriginNetwork(nn.Module):
 
         self.particle_branch = _make_branch(particle_size, particle_hidden_sizes)
         self.event_branch = _make_branch(event_size, event_hidden_sizes)
-
+    
         self.classifier = nn.Sequential(
-            nn.Linear(particle_hidden_sizes[-1] + event_hidden_sizes[-1], 128),
-            nn.LayerNorm(128),
+            nn.Linear(particle_hidden_sizes[-1] + event_hidden_sizes[-1], consolidation_hidden_sizes[0]),
+            nn.LayerNorm(consolidation_hidden_sizes[0]),
             nn.SiLU(),
             nn.Dropout(0.15),
-            nn.Linear(128, 32),
+            nn.Linear(consolidation_hidden_sizes[0], consolidation_hidden_sizes[1]),
+            nn.LayerNorm(consolidation_hidden_sizes[1]),
             nn.SiLU(),
-            nn.Linear(32, output_size),
+            nn.Linear(consolidation_hidden_sizes[1], output_size),
+        )
+
+    def encode(
+        self,
+        particle_features: torch.Tensor,
+        event_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        An encoding function that processes the features of two particles and event features through their respective branches and concatenates the resulting embeddings.
+
+        Arguments:
+        - particle_features (torch.Tensor): The features for the particle.
+        - event_features (torch.Tensor): The features for the event.
+
+        Returns:
+        - torch.Tensor: The concatenated embeddings from the particle and event branches.
+        """
+        particle_embedding = self.particle_branch(particle_features)
+        event_embedding = self.event_branch(event_features)
+
+        return torch.cat(
+            [particle_embedding, event_embedding],
+            dim=-1,
         )
 
     def forward(self, particle_features : torch.Tensor, event_features : torch.Tensor) -> torch.Tensor:
@@ -104,16 +129,17 @@ class ParticleOriginNetwork(nn.Module):
         Forward pass through the network. Combines the outputs of the particle and event branches and passes them through a combination classifier network.
 
         Arguments:
-        - particle_features (torch.Tensor): The input features for the particle branch.
-        - event_features (torch.Tensor): The input features for the event branch.
+        - particle_features (torch.Tensor): The features for the particle.
+        - event_features (torch.Tensor): The features for the event.
 
         Returns:
-        - torch.Tensor: The output of the network.
+        - torch.Tensor: The output of the classifier.
         """
-        particle_embedding = self.particle_branch(particle_features)
-        event_embedding = self.event_branch(event_features)
-        combined = torch.cat([particle_embedding, event_embedding], dim=-1)
-        return self.classifier(combined).squeeze(-1)
+        embedding = self.encode(
+            particle_features,
+            event_features,
+        )
+        return self.classifier(embedding).squeeze(-1)
 
 class ParticlePairNetwork(nn.Module):
     """

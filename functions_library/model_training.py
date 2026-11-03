@@ -39,6 +39,12 @@ def _function_on_inputs(function : callable, inputs : torch.Tensor | tuple, args
         return tuple(function(value, *args, **kwargs) for value in inputs)
     return function(inputs, *args, **kwargs)
 
+def _call_with_inputs(function : callable, inputs : torch.Tensor | tuple, eventwise_features : torch.Tensor) -> torch.Tensor:
+    """Call a model or encoder with either single-particle or pair inputs."""
+    if isinstance(inputs, tuple):
+        return function(*inputs, eventwise_features)
+    return function(inputs, eventwise_features)
+
 def _normalize_inputs(inputs : torch.Tensor | tuple, means : torch.Tensor, stds : torch.Tensor) -> torch.Tensor | tuple:
     """
     Normalize inputs using provided means and standard deviations.
@@ -183,7 +189,7 @@ def _domain_logits(
             "Adversarial training requires the main model to provide "
             "an encode(...) method."
         )
-    embedding = model.encode(*inputs, eventwise_features)
+    embedding = _call_with_inputs(model.encode, inputs, eventwise_features)
     if gradient_reversal is not None:
         embedding = gradient_reversal(embedding)
     return domain_adversary(embedding)
@@ -404,6 +410,8 @@ def train_model(
             if norm_target:
                 mean_t, std_t = _move_to_device(norm_target, device)
                 targets = (targets - mean_t) / std_t
+            if targets.shape[-1] == 1:
+                targets = targets.reshape(-1)
 
 
             inputs = _normalize_inputs(inputs, means_i, stds_i)
@@ -412,7 +420,7 @@ def train_model(
             eventwise_features = torch.nan_to_num(eventwise_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
 
             optimizer.zero_grad()
-            outputs = model(*inputs, eventwise_features)
+            outputs = _call_with_inputs(model, inputs, eventwise_features)
 
             targets = targets.to(dtype=outputs.dtype)
             
@@ -594,6 +602,8 @@ def validate_model(
             if norm_target:
                 mean_t, std_t = _move_to_device(norm_target, device)
                 targets = (targets - mean_t) / std_t
+            if targets.shape[-1] == 1:
+                targets = targets.reshape(-1)
 
             if not torch.isfinite(targets).all():
                 raise ValueError(f"Warning: Non-finite values detected in targets")
@@ -603,7 +613,7 @@ def validate_model(
             inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})
             event_features = torch.nan_to_num(event_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
             
-            outputs = model(*inputs, event_features)
+            outputs = _call_with_inputs(model, inputs, event_features)
 
             targets = targets.to(dtype=outputs.dtype)
             task_loss = _weighted_task_loss(
@@ -693,7 +703,7 @@ def predict(
                 inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})  # Replace NaN values with 0.0
                 event_features = torch.nan_to_num(event_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
 
-                outputs = model(*inputs, event_features)
+                outputs = _call_with_inputs(model, inputs, event_features)
                 outputs = outputs.to(dtype=torch.float32)
 
                 outputs = _prepare_predict_outputs(outputs, device, norm_target, log_target, variance_target)
@@ -746,7 +756,6 @@ def compressed_training_function(
     norm_target : bool | None = None,
     periodic_save_interval : int | None = None,
     periodic_save_path : str | None = None,
-    variance_target : bool = False
 
 
 
@@ -821,9 +830,14 @@ def compressed_training_function(
 
     particle_fields = [field for field in train_dataset.fields if not field.startswith("eventwise_")]
     event_fields = [field for field in train_dataset.fields if field.startswith("eventwise_")]
-    particle_size = len(particle_fields) // 2
-    if len(particle_fields) % 2 != 0:
-        raise ValueError("Pair particle fields are not evenly split between the two particles.")
+    
+    if len(particle_fields) % 2 == 0:
+        particle_size = len(particle_fields) // 2
+        embedding_size = model_kwargs["particle_hidden_sizes"][-1] * 2 + model_kwargs["event_hidden_sizes"][-1]
+    else:
+        particle_size = len(particle_fields)
+        embedding_size = model_kwargs["particle_hidden_sizes"][-1] + model_kwargs["event_hidden_sizes"][-1]
+
     if use_old_model == False:
         model = nn_model(
             particle_size,
@@ -833,19 +847,17 @@ def compressed_training_function(
     else:
         model = use_old_model.to(device)
 
-    embedding_size = model_kwargs["particle_hidden_sizes"][-1] * 2 + model_kwargs["event_hidden_sizes"][-1]
-
     if domain_adversary:
         domain_adversary = neural_models.DomainAdversary(
             embedding_size=embedding_size,
             domain_count=1,
         )
         gradient_reversal = neural_models.GradientReversal(strength = gradient_reversal_strength)
-        optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=0.001)
+        optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=0.002)
     else:
         domain_adversary = None
         gradient_reversal = None
-        optimizer = optimizer_class(list(model.parameters()), lr=0.001)
+        optimizer = optimizer_class(list(model.parameters()), lr=0.002)
     train_losses, val_losses = train_model(model, 
                                            optimizer, 
                                            loss_function, 
@@ -866,8 +878,7 @@ def compressed_training_function(
                                            domain = domain,
                                            z_target = z_target,
                                            norm_target = norm_target,
-                                           variance_target = variance_target,
                                            periodic_save_interval = periodic_save_interval,
                                            periodic_save_path = periodic_save_path
                                            )
-    return model, train_losses, val_losses
+    return model, train_losses, val_losses, means, stds, norm_target

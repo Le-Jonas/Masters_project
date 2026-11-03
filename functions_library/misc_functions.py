@@ -1096,6 +1096,7 @@ def create_pseudo_roc_curve(
     sample_size : int = 100_000,
     use_predictions : bool = True,
     use_template_fits : bool = True,
+    save_namespace : list[str] | None = None,
 ) -> tuple[np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], int, int]:
     """
     Creates a pseudo ROC curve by computing the number of true positives and true negatives for different prediction thresholds, as well as the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
@@ -1187,7 +1188,7 @@ def create_pseudo_roc_curve(
         bins=bins,
         n_total=n_total,
         sample_size=sample_size,
-        save_namespace="MC"
+        save_namespace=save_namespace[0]
     )
 
     print(f"Fitting the data Z mass distributions...")
@@ -1204,7 +1205,7 @@ def create_pseudo_roc_curve(
         bins=bins,
         n_total=n_total,
         sample_size=sample_size,
-        save_namespace="Data"
+        save_namespace=save_namespace[1]
     )
 
     N_tp_cut_mc, N_fp_cut_mc, N_tp_cut_data, N_fp_cut_data = _get_cut_totals_from_distribution(
