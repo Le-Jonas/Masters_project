@@ -778,7 +778,7 @@ def compressed_training_function(
 
     means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
     
-    if norm_target is not None:
+    if norm_target:
         if z_target:
             mean_dataset = dataset_classes.ZPairDataset(
                 h5_files[:train_size_egam],

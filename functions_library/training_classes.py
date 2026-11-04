@@ -80,6 +80,37 @@ class _GaussianNLLBase(torch.nn.Module):
         return losses
 
 
+class AngularMSELoss(torch.nn.Module):
+    def __init__(self, reduction: str = "mean"):
+        super().__init__()
+        if reduction not in {"none", "mean", "sum"}:
+            raise ValueError(
+                "reduction must be 'none', 'mean', or 'sum'."
+            )
+        self.reduction = reduction
+
+    def forward(
+        self,
+        outputs: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Computes mean squared error for periodic angular values.
+
+        Angles are expected in radians. Differences are wrapped to the
+        interval [-pi, pi], making -pi and +pi equivalent.
+        """
+        residual = torch.atan2(
+            torch.sin(outputs - targets),
+            torch.cos(outputs - targets),
+        )
+        return F.mse_loss(
+            residual,
+            torch.zeros_like(residual),
+            reduction=self.reduction,
+        )
+
+
 class GaussianNLLLoss(_GaussianNLLBase):
     def __init__(
         self,

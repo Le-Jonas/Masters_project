@@ -693,7 +693,28 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
             targets = targets.double()
 
         if z_target:
-            targets = _compute_z_mass(targets[:, 0, 0], targets[:, 0, 1], targets[:, 0, 2], targets[:, 0, 3], targets[:, 1, 0], targets[:, 1, 1], targets[:, 1, 2], targets[:, 1, 3]).unsqueeze(1)
+            if targets.ndim != 3 or targets.shape[1:] != (2, 4):
+                raise ValueError(
+                    "z_target requires pair targets with shape "
+                    f"[batch, 2, 4], got {tuple(targets.shape)}"
+                )
+            targets = _compute_z_mass(
+                targets[:, 0, 0],
+                targets[:, 0, 1],
+                targets[:, 0, 2],
+                targets[:, 0, 3],
+                targets[:, 1, 0],
+                targets[:, 1, 1],
+                targets[:, 1, 2],
+                targets[:, 1, 3],
+            ).unsqueeze(1)
+        elif targets.ndim != 2:
+            raise ValueError(
+                "compute_target_mean_std expects targets with shape "
+                f"[batch, target_fields], got {tuple(targets.shape)}. "
+                "For ZPairDataset targets with shape [batch, 2, 4], "
+                "call it with z_target=True."
+            )
         if log_target:
             targets = torch.log1p(targets)
 
