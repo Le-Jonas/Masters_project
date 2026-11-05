@@ -60,7 +60,7 @@ def _h5_files_from_path(path : str | Path) -> list[Path]:
         return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
     raise FileNotFoundError(f"H5 path does not exist: {path}")
 
-def _compute_z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndarray[np.float64], phi1 : float | np.ndarray[np.float64], e1 : float | np.ndarray[np.float64], pt2 : float | np.ndarray[np.float64], eta2 : float | np.ndarray[np.float64], phi2 : float | np.ndarray[np.float64], e2 : float | np.ndarray[np.float64]) -> float | np.ndarray[np.float64]:
+def _compute_z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndarray[np.float64], phi1 : float | np.ndarray[np.float64], pt2 : float | np.ndarray[np.float64], eta2 : float | np.ndarray[np.float64], phi2 : float | np.ndarray[np.float64], e1 : float | np.ndarray[np.float64] | None = None, e2 : float | np.ndarray[np.float64] | None = None) -> float | np.ndarray[np.float64]:
     """
     Given the transverse momentum (pt), pseudorapidity (eta), azimuthal angle (phi), and energy (e) of two particles, compute the invariant mass of the Z boson formed by these two particles.
 
@@ -71,6 +71,10 @@ def _compute_z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndar
     Returns:
     - z_mass: Value or array of invariant mass(es) of the Z boson(s) formed by the particle pair(s).
     """
+    if e1 is None or e2 is None:
+        e1 = pt1 * np.cosh(eta1)
+        e2 = pt2 * np.cosh(eta2)
+
     px1 = pt1 * np.cos(phi1)
     py1 = pt1 * np.sin(phi1)
     pz1 = pt1 * np.sinh(eta1)
@@ -178,7 +182,7 @@ def _selected_rows_for_files(h5_files : list[Path], mix_files : str | Path | lis
     dataset.close()
     return files, valid_rows
 
-def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : torch.device, dataloader_kwargs : dict, valid_fields : dict, n_total : int = 200, sample_size : int = 100_000, z_masses : ArrayLike | None = None, bins : int | list[float] | None = None) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
+def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : torch.device, dataloader_kwargs : dict, valid_fields : dict, n_total : int = 200, sample_size : int = 100_000, z_masses : ArrayLike | None = None, bins : int | list[float] | None = None, predictions_path : str | Path | None = None) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
     """
     Given a model, a full data loader, and a target data loader, compute the total number of true positives and true negatives for different prediction thresholds and the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
 
@@ -200,13 +204,23 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
     - N_tp_cut: The number of true positives for the cut threshold.
     - N_fp_cut: The number of false positives for the cut threshold.
     """
-    mc_dataset_mean = H5EgammaDataset(mc_files, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_field = None)
-    means, stds = compute_mean_std(mc_dataset_mean, sample_size=sample_size, batch_size=dataloader_kwargs["batch_size"], num_workers=dataloader_kwargs["num_workers"], pin_memory=dataloader_kwargs["pin_memory"], persistent_workers=dataloader_kwargs["persistent_workers"])
-    mc_dataset_mean.close()
-
     mc_dataset = ZPairDataset(mc_files, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = ["truthOrigin", "passid_Medium"], valid_fields = valid_fields)
 
-    full_loader = DataLoader(mc_dataset, **dataloader_kwargs)
+    if predictions_path:
+        predictions_path = Path(predictions_path)
+        if predictions_path.is_file():
+            predictions = np.loadtxt(predictions_path, delimiter=",")
+        else:
+            raise FileNotFoundError(f"Predictions file does not exist: {predictions_path}")
+    else:
+        mc_dataset_mean = H5EgammaDataset(mc_files, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_field = None)
+        means, stds = compute_mean_std(mc_dataset_mean, sample_size=sample_size, batch_size=dataloader_kwargs["batch_size"], num_workers=dataloader_kwargs["num_workers"], pin_memory=dataloader_kwargs["pin_memory"], persistent_workers=dataloader_kwargs["persistent_workers"])
+        mc_dataset_mean.close()
+
+        full_loader = DataLoader(mc_dataset, **dataloader_kwargs)
+        predictions = predict(model, full_loader, device=device, means=means, stds=stds)
+
+
     target_only_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
     target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 2
     target_loader = DataLoader(_TargetOnlyDataset(mc_dataset), **target_only_dataloader_kwargs)
@@ -227,7 +241,6 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
     pseudo_truth = np.concatenate(pseudo_truth, axis=0)
     pseudo_truth = pseudo_truth[:, 0] * pseudo_truth[:, 1]
 
-    predictions = predict(model, full_loader, device=device, means=means, stds=stds)
     mc_dataset.close()
 
     if z_masses is not None:
@@ -304,7 +317,7 @@ def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Modu
     phi2 = prediction_dict["phi"][:, 2]
     e2 = prediction_dict["e"][:, 2]
 
-    z_masses = _compute_z_mass(pt1, eta1, phi1, e1, pt2, eta2, phi2, e2)
+    z_masses = _compute_z_mass(pt1, eta1, phi1, pt2, eta2, phi2, e1 = e1, e2 = e2)
     return z_masses
 
 def _get_totals_from_distribution(
@@ -321,6 +334,7 @@ def _get_totals_from_distribution(
     sample_size : int = 100_000,
     use_fit_template : bool = False,
     save_namespace : str | None = None,
+    predictions_path : str | Path | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
@@ -335,6 +349,7 @@ def _get_totals_from_distribution(
     - dataloader_kwargs: A dictionary of keyword arguments to pass to the DataLoader constructor
     - valid_fields: A dictionary of needed non_nan fields for the dataset.
     - use_fit_template: A boolean indicating whether to use template fit. Default is False.
+    - predictions_path: A path to a file containing pre-computed predictions. If provided, these predictions will be used instead of computing them from the model.
 
     Keywords:
     - bins: The number of bins or the bin edges for the histograms. Default is 1000.
@@ -345,14 +360,21 @@ def _get_totals_from_distribution(
     - N_tp: An array containing the number of true positives for each threshold.
     - N_fp: An array containing the number of false positives for each threshold.
     """
-    dataset_mean = H5EgammaDataset(files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_field = None)
-    means, stds = compute_mean_std(dataset_mean, sample_size=sample_size, batch_size=dataloader_kwargs["batch_size"], num_workers=dataloader_kwargs["num_workers"], pin_memory=dataloader_kwargs["pin_memory"], persistent_workers=dataloader_kwargs["persistent_workers"])
-    dataset_mean.close()
+    if predictions_path:
+        predictions_path = Path(predictions_path)
+        if predictions_path.is_file():
+            predictions = np.loadtxt(predictions_path, delimiter=",")
+        else:
+            raise FileNotFoundError(f"Predictions file does not exist: {predictions_path}")
+    else:
+        dataset_mean = H5EgammaDataset(files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_field = None)
+        means, stds = compute_mean_std(dataset_mean, sample_size=sample_size, batch_size=dataloader_kwargs["batch_size"], num_workers=dataloader_kwargs["num_workers"], pin_memory=dataloader_kwargs["pin_memory"], persistent_workers=dataloader_kwargs["persistent_workers"])
+        dataset_mean.close()
 
-    dataset = ZPairDataset(files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_field = None, valid_fields = valid_fields)
-    loader = DataLoader(dataset, **dataloader_kwargs)
-    predictions = predict(model, loader, device, means=means, stds=stds)
-    dataset.close()
+        dataset = ZPairDataset(files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_field = None, valid_fields = valid_fields)
+        loader = DataLoader(dataset, **dataloader_kwargs)
+        predictions = predict(model, loader, device, means=means, stds=stds)
+        dataset.close()
 
     N_tp = np.zeros(n_total)
     N_fp = np.zeros(n_total)
@@ -421,8 +443,6 @@ def _get_cut_totals_from_distribution(
     Arguments:
     - mc_files_path: A list of paths to the H5 files containing the Monte Carlo data.
     - data_files_path: A list of paths to the H5 files containing the data.
-    - mc_signal_hist: The Monte Carlo signal histogram.
-    - mc_background_hist: The Monte Carlo background histogram.
     - mc_masses: The Z boson masses from the Monte Carlo data.
     - data_masses: The Z boson masses from the data.
     - dataloader_kwargs: A dictionary of keyword arguments to pass to the DataLoader constructor
@@ -430,6 +450,10 @@ def _get_cut_totals_from_distribution(
 
     Keywords:
     - bins: The number of bins or the bin edges for the histograms. Default is 1000.
+    - mc_signal_hist: The Monte Carlo signal histogram.
+    - mc_background_hist: The Monte Carlo background histogram.
+    - use_fit_template: A boolean indicating whether to use a fit template. Default is False.
+    - predictions_path: A path to a file containing pre-computed predictions. If provided, these predictions will be used instead of computing them from the model.
 
     Returns:
     - N_tp: An array containing the number of true positives for each threshold.
@@ -510,7 +534,7 @@ def _load_z_masses_from_files(z_masses_path : list[Path], dataloader_kwargs : di
     z_masses = []
     expected_batches = len(dataloader)
     for batch, target in enumerate(dataloader):
-        z_masses.append(_compute_z_mass(target[:, 0, 0], target[:, 0, 1], target[:, 0, 2], target[:, 0, 3], target[:, 1, 0], target[:, 1, 1], target[:, 1, 2], target[:, 1, 3]))
+        z_masses.append(_compute_z_mass(target[:, 0, 0], target[:, 0, 1], target[:, 0, 2], target[:, 1, 0], target[:, 1, 1], target[:, 1, 2], e1 = target[:, 0, 3], e2 = target[:, 1, 3]))
         print(300*" ", end='\r')  # Clear the line
         print(f"Getting Z masses with batch {batch + 1}/{expected_batches}", end='\r')
     print(300*" ", end='\r')  # Clear the line
@@ -702,11 +726,11 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
                 targets[:, 0, 0],
                 targets[:, 0, 1],
                 targets[:, 0, 2],
-                targets[:, 0, 3],
                 targets[:, 1, 0],
                 targets[:, 1, 1],
                 targets[:, 1, 2],
-                targets[:, 1, 3],
+                e1 = targets[:, 0, 3],
+                e2 = targets[:, 1, 3],
             ).unsqueeze(1)
         elif targets.ndim != 2:
             raise ValueError(
@@ -870,8 +894,9 @@ def find_Z_peak(
                 for field in ("pt", "eta", "phi", "e")
             ]
             z_masses.extend(_compute_z_mass(
-                values[0], values[1], values[2], values[3],
-                values[4], values[5], values[6], values[7],
+                values[0], values[1], values[2], 
+                values[4], values[5], values[6], 
+                e1 = values[3], e2 = values[7]
             ))
             z_count = len(first_rows)
         print(300*" ", end='\r')  # Clear the line
@@ -1046,8 +1071,9 @@ def find_Z_peak_pairs(
                     for field in ("pt", "eta", "phi", "e")
                 ]
                 z_masses.extend(_compute_z_mass(
-                    values[0], values[1], values[2], values[3],
-                    values[4], values[5], values[6], values[7],
+                    values[0], values[1], values[2], 
+                    values[4], values[5], values[6], 
+                    e1 = values[3], e2 = values[7],
                 ))
 
         print(
@@ -1115,9 +1141,11 @@ def create_pseudo_roc_curve(
     bins : int | list[float] = 1000,
     n_total : int = 200,
     sample_size : int = 100_000,
-    use_predictions : bool = True,
+    use_mass_predictions : bool | list | np.ndarray = True,
     use_template_fits : bool = True,
     save_namespace : list[str] | None = None,
+    z_data_predictions_path : str | Path | None = None,
+    z_mc_predictions_path : str | Path | None = None,
 ) -> tuple[np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], int, int]:
     """
     Creates a pseudo ROC curve by computing the number of true positives and true negatives for different prediction thresholds, as well as the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
@@ -1138,7 +1166,7 @@ def create_pseudo_roc_curve(
     - bins: The number of bins or the bin edges to use for histogramming the predicted Z masses. Default is 1000.
     - n_total: The number of thresholds to evaluate. Default is 200.
     - sample_size: The number of samples to use for computing the mean and standard deviation. Default is 100,000.
-    - use_predictions: Whether to use the predicted Z masses for the analysis instead of "egammas" Z masses. Default is True.
+    - use_mass_predictions: Whether to use the predicted Z masses for the analysis instead of "egammas" Z masses. Default is True.
 
     Returns:
     - N_tp_mc: An array containing the true number of true positives for each threshold.
@@ -1160,17 +1188,24 @@ def create_pseudo_roc_curve(
         "pin_memory": pin_memory,
     }
     valid_fields = {"egammas": ["truthOrigin", "passid_Medium"]}
-    if use_predictions == False:
+    if use_mass_predictions == False:
         valid_fields["egammas"].extend(["pt", "eta", "phi", "e"])
 
-    if use_predictions:
-        print(f"Predicting the Z masses for MC and data files...")
-        mc_z_masses = _find_predicted_Z_masses(mc_files, models, device, dataloader_kwargs, valid_fields, sample_size=sample_size)
-        data_z_masses = _find_predicted_Z_masses(data_files, models, device, dataloader_kwargs, valid_fields, sample_size=sample_size)
-    else:
+    if (type(use_mass_predictions) == list or type(use_mass_predictions) == np.ndarray):
+        print(f"Loading the Z masses for MC and data files...")
+        mc_z_masses = np.loadtxt(use_mass_predictions[0], max_rows=1_000_000)
+        data_z_masses = np.loadtxt(use_mass_predictions[1], max_rows=1_000_000)
+
+    elif use_mass_predictions:
         print(f"Loading the Z masses for MC and data files...")
         mc_z_masses = _load_z_masses_from_files(mc_files, dataloader_kwargs, valid_fields)
         data_z_masses = _load_z_masses_from_files(data_files, dataloader_kwargs, valid_fields)
+        
+    else:
+        print(f"Predicting the Z masses for MC and data files...")
+        mc_z_masses = _find_predicted_Z_masses(mc_files, models, device, dataloader_kwargs, valid_fields, sample_size=sample_size)
+        data_z_masses = _find_predicted_Z_masses(data_files, models, device, dataloader_kwargs, valid_fields, sample_size=sample_size)
+
 
     print(f"Creating pseudo ROC curve with {n_total} thresholds.")
     print(f"Getting base truth totals for MC files...")
@@ -1184,6 +1219,7 @@ def create_pseudo_roc_curve(
         sample_size=sample_size,
         z_masses=mc_z_masses,
         bins=bins,
+        predictions_path=z_mc_predictions_path
     )
 
     if use_template_fits:
@@ -1209,7 +1245,8 @@ def create_pseudo_roc_curve(
         bins=bins,
         n_total=n_total,
         sample_size=sample_size,
-        save_namespace=save_namespace[0]
+        save_namespace=save_namespace[0],
+        predictions_path=z_mc_predictions_path
     )
 
     print(f"Fitting the data Z mass distributions...")
@@ -1226,7 +1263,8 @@ def create_pseudo_roc_curve(
         bins=bins,
         n_total=n_total,
         sample_size=sample_size,
-        save_namespace=save_namespace[1]
+        save_namespace=save_namespace[1],
+        predictions_path=z_data_predictions_path
     )
 
     N_tp_cut_mc, N_fp_cut_mc, N_tp_cut_data, N_fp_cut_data = _get_cut_totals_from_distribution(
@@ -1240,6 +1278,8 @@ def create_pseudo_roc_curve(
         mc_background_hist = bkg_z_mass_hist,
         use_fit_template = use_template_fits,
         bins=bins,
+        predictions_path_mc=z_mc_predictions_path,
+        predictions_path_data=z_data_predictions_path
     )
 
     print(f"Pseudo ROC curve creation complete. Returning results.")
