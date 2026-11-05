@@ -134,7 +134,12 @@ def _scan_h5_file_rows(
         return np.flatnonzero(valid_rows)
 
 
-def _build_file_pair_indices(path : Path, valid_rows : np.ndarray, feature_name : str) -> tuple[np.ndarray, np.ndarray]:
+def _build_file_pair_indices(
+    path: Path,
+    valid_rows: np.ndarray,
+    feature_name: str,
+    exactly_two: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Build all pair and event indices for one file.
     
@@ -180,7 +185,11 @@ def _build_file_pair_indices(path : Path, valid_rows : np.ndarray, feature_name 
     event_row_starts = np.searchsorted(valid_rows, starts, side="left")
     event_row_ends = np.searchsorted(valid_rows, ends, side="left")
     selected_counts = event_row_ends - event_row_starts
-    pair_counts = selected_counts * (selected_counts - 1) // 2
+    pair_counts = (
+        np.where(selected_counts == 2, 1, 0)
+        if exactly_two
+        else selected_counts * (selected_counts - 1) // 2
+    )
     pair_array = np.empty((int(pair_counts.sum()), 2), dtype=np.int64)
     event_array = np.empty(len(pair_array), dtype=np.int64)
 
@@ -1441,10 +1450,15 @@ class ZPairDataset(H5EgammaDataset):
 
     Arguments:
     - files (list): A list of HDF5 file paths containing the dataset.
+    - exactly_two (bool): If True, include only events with exactly two selected
+      leptons. Default is False, which includes every unordered pair from events
+      with at least two selected leptons.
     - **kwargs: Additional keyword arguments to be passed to the parent class (H5EgammaDataset).
     """
 
-    def __init__(self, files, **kwargs):
+    def __init__(self, files, exactly_two: bool = False, **kwargs):
+        if not isinstance(exactly_two, bool):
+            raise TypeError("exactly_two must be a boolean.")
         super().__init__(files=files, **kwargs)
 
         self.pair_file_indices = []
@@ -1456,6 +1470,7 @@ class ZPairDataset(H5EgammaDataset):
             self.files,
             self.valid_rows,
             [self.features[0]] * len(self.files),
+            [exactly_two] * len(self.files),
         )
         backend = self.metadata_backend
         if backend == "auto":

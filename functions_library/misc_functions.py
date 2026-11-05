@@ -257,7 +257,7 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
         
     N_tp = np.zeros(n_total)
     N_fp = np.zeros(n_total)
-    prediction_values = np.linspace(-15, 15, n_total)
+    prediction_values = np.linspace(-5, 10, n_total)
     for i in range(n_total):
         predicted_labels = (predictions > prediction_values[i]).astype(bool)
         N_tp[i] = (truth * predicted_labels).sum()
@@ -379,7 +379,7 @@ def _get_totals_from_distribution(
     N_tp = np.zeros(n_total)
     N_fp = np.zeros(n_total)
     keep_indices = np.zeros(n_total, dtype=bool)
-    prediction_values = np.linspace(-15, 15, n_total)
+    prediction_values = np.linspace(-5, 10, n_total)
 
     if not use_fit_template:
         def fit_pdf(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
@@ -1143,7 +1143,7 @@ def create_pseudo_roc_curve(
     sample_size : int = 100_000,
     use_mass_predictions : bool | list | np.ndarray = True,
     use_template_fits : bool = True,
-    save_namespace : list[str] | None = None,
+    save_namespace : list[str] | list[None] = [None, None],
     z_data_predictions_path : str | Path | None = None,
     z_mc_predictions_path : str | Path | None = None,
 ) -> tuple[np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], int, int]:
@@ -1187,14 +1187,14 @@ def create_pseudo_roc_curve(
         "persistent_workers": persistent_workers,
         "pin_memory": pin_memory,
     }
-    valid_fields = {"egammas": ["truthOrigin", "passid_Medium"]}
+    valid_fields = {"egammas": ["truthOrigin", "passid_Medium", "pt", "eta", "phi", "e"], "truth": ["pt", "eta", "phi", "e"]}
     if use_mass_predictions == False:
         valid_fields["egammas"].extend(["pt", "eta", "phi", "e"])
 
     if (type(use_mass_predictions) == list or type(use_mass_predictions) == np.ndarray):
         print(f"Loading the Z masses for MC and data files...")
-        mc_z_masses = np.loadtxt(use_mass_predictions[0], max_rows=1_000_000)
-        data_z_masses = np.loadtxt(use_mass_predictions[1], max_rows=1_000_000)
+        mc_z_masses = np.loadtxt(use_mass_predictions[0], delimiter=',')
+        data_z_masses = np.loadtxt(use_mass_predictions[1], delimiter=',')
 
     elif use_mass_predictions:
         print(f"Loading the Z masses for MC and data files...")
@@ -1278,8 +1278,6 @@ def create_pseudo_roc_curve(
         mc_background_hist = bkg_z_mass_hist,
         use_fit_template = use_template_fits,
         bins=bins,
-        predictions_path_mc=z_mc_predictions_path,
-        predictions_path_data=z_data_predictions_path
     )
 
     print(f"Pseudo ROC curve creation complete. Returning results.")
