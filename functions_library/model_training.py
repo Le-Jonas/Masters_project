@@ -204,19 +204,22 @@ def _prepare_z_targets(targets : torch.Tensor) -> torch.Tensor:
     Returns:
     - torch.Tensor: The prepared z target tensor.
     """
-    if targets.ndim < 2 or targets.shape[-1] < 2:
+    if targets.shape[-1] < 3 or targets.shape[1] != 2:
         raise ValueError(
-            "z_target requires the last dimension of targets to have at least 2 elements."
+            "z_target requires the last dimensions of targets to be (2, 3) or (2, 4)."
         )
+    
     pt1 = targets[:, 0, 0]
     pt2 = targets[:, 1, 0]
     eta1 = targets[:, 0, 1]
     eta2 = targets[:, 1, 1]
     phi1 = targets[:, 0, 2]
-    phi2 = targets[:, 1, 2]
-    e1 = targets[:, 0, 3]
-    e2 = targets[:, 1, 3]
+    phi2 = targets[:, 1, 2] 
 
+    if targets.shape[-1] < 4:
+        e1 = pt1 * torch.cosh(eta1)
+        e2 = pt2 * torch.cosh(eta2)
+    
     x1 = pt1 * torch.cos(phi1)
     y1 = pt1 * torch.sin(phi1)
     z1 = pt1 * torch.sinh(eta1)

@@ -103,6 +103,12 @@ def _compute_z_mass_with_error(p1_data : tuple[np.ndarray, np.ndarray, np.ndarra
     pt1_err, eta1_err, phi1_err, e1_err = p1_error
     pt2_err, eta2_err, phi2_err, e2_err = p2_error
 
+    if e1 is None or e2 is None:
+        e1 = pt1 * np.cosh(eta1)
+        e2 = pt2 * np.cosh(eta2)
+        e1_err = np.sqrt((np.cosh(eta1) * pt1_err)**2 + (pt1 * np.sinh(eta1) * eta1_err)**2)
+        e2_err = np.sqrt((np.cosh(eta2) * pt2_err)**2 + (pt2 * np.sinh(eta2) * eta2_err)**2)
+
     x1 = pt1 * np.cos(phi1)
     y1 = pt1 * np.sin(phi1)
     z1 = pt1 * np.sinh(eta1)

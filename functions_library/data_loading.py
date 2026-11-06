@@ -1,11 +1,16 @@
 import numpy as np
+from numpy.ma import size
 import torch
 from torch.utils.data import  Sampler, DataLoader
 from pathlib import Path
-from . import dataset_classes as _class_
-from . import misc_functions as _misc_
 import time
 import numpy.typing as npt
+
+from . import dataset_classes as _class_
+from . import misc_functions as _misc_
+from . import neural_models as _neural_
+from . import model_training as _train_
+
 
 class ShuffledContiguousBatchSampler(Sampler):
     """
@@ -450,3 +455,316 @@ def electron_predictions_to_pair_predictions(
         output_start = output_end
 
     return pair_predictions
+
+
+
+
+def models_to_csv_files(models_path : Path | str, csv_path : Path | str, h5_egam_files : list[Path] | list[str], h5_data_files : list[Path] | list[str], batch_size : int = 4096, means : tuple | None = None, stds : tuple | None = None, valid_fields : dict[str, bool] | None = None, mixture_ratio : float | None = 0.66, mix_seed : int = 42, model_type : str = "egamma", model_configs : dict[str, any] = {}) -> None:
+    """
+    Convert model predictions to CSV files.
+
+    Arguments:
+    - models_path (Path or str): Path to the directory containing the model files.
+    - csv_path (Path or str): Path to the output CSV file.
+    - h5_egam_files (list of Path or str): List of paths to the H5 Egamma files.
+    - h5_data_files (list of Path or str): List of paths to the H5 data files.
+
+    Keywords:
+    - model_type (str): The type of the model. Default is "egammas".
+    - batch_size (int): The number of samples to process in each batch. Default is 256.
+    - mixture_ratio (float): The ratio of the mixture. Default is 0.66.
+    - mix_seed (int): The seed for the random number generator. Default is 42.  
+    """
+    models_path = Path(models_path)
+    csv_path = Path(csv_path)
+
+    if (not means or not stds):
+        means_dataset = _class_.H5EgammaDataset(
+                        files=h5_egam_files,
+                        mix_files=h5_data_files,
+                        mixture_ratio=mixture_ratio,
+                        mixture_seed=mix_seed,
+                        exclude_features=["truth"],
+                        exclude_fields = valid_fields,
+                        valid_fields = valid_fields,
+                        y_source = "egammas",
+                        y_field = None,
+                    )
+        means, stds = _misc_.compute_mean_std(means_dataset, sample_size=1_000_000, batch_size=batch_size,)
+        means_dataset.close()
+
+    if model_type == "egamma":
+        mc_dataset = _class_.H5EgammaDataset(
+            files=h5_egam_files,
+            exclude_features=["truth"],
+            exclude_fields = valid_fields,
+            valid_fields = valid_fields,
+            y_source = "egammas",
+            y_field = None,
+        )
+        data_dataset = _class_.H5EgammaDataset(
+            files=h5_data_files,
+            exclude_features=["truth"],
+            exclude_fields = valid_fields,
+            valid_fields = valid_fields,
+            y_source = "egammas",
+            y_field = None,
+        )
+
+        pair_mc_dataset = _class_.ZPairDataset(
+            files=h5_egam_files,
+            exclude_features=["truth"],
+            exclude_fields = valid_fields,
+            valid_fields = valid_fields,
+            y_source = "egammas",
+            y_field = None
+        )
+        pair_data_dataset = _class_.ZPairDataset(
+            files=h5_data_files,
+            exclude_features=["truth"],
+            exclude_fields = valid_fields,
+            valid_fields = valid_fields,
+            y_source = "egammas",
+            y_field = None
+        )
+
+        particle_size = len([field for field in mc_dataset.fields if not field.startswith("eventwise_")])
+        event_size = len([field for field in mc_dataset.fields if field.startswith("eventwise_")])
+
+    elif model_type == "pair":
+        mc_dataset = _class_.ZPairDataset(
+            files=h5_egam_files,
+            exclude_features=["truth"],
+            exclude_fields = valid_fields,
+            valid_fields = valid_fields,
+            y_source = "egammas",
+            y_field = None,
+        )
+        
+        data_dataset = _class_.ZPairDataset(
+            files=h5_data_files,
+            exclude_features=["truth"],
+            exclude_fields = valid_fields,
+            valid_fields = valid_fields,
+            y_source = "egammas",
+            y_field = None,
+        )
+
+        particle_size = len([field for field in mc_dataset.fields if not field.startswith("eventwise_")]) // 2
+        event_size = len([field for field in mc_dataset.fields if field.startswith("eventwise_")])
+
+    else:
+        raise ValueError(f"Invalid model_type: {model_type}. Must be 'egamma' or 'pair'.")
+
+    for model in models_path.glob("*.pt"):
+        name = model.stem
+        name_parts = name.split("_")
+
+        if name_parts[1] == "pair" and model_type == "egamma":
+            print(f"Skipping model {name} because it is a pair model and model_type is 'egamma'.")
+            continue
+        if name_parts[1] != "pair" and model_type == "pair":
+            print(f"Skipping model {name} because it is an egammas model and model_type is 'pair'.")
+            continue
+        if (name_parts[-1] == "new" or name_parts[-1] == "old"):
+            print(f"Skipping model {name} because it is a non-normal model.")
+            continue
+
+        csv_mc_file = csv_path / f"{name_parts[-1]}_{model_type}_predictions_mc.csv"
+        csv_data_file = csv_path / f"{name_parts[-1]}_{model_type}_predictions_data.csv"
+
+        print(f"Processing model: {model.name}")
+        if model_type == "egamma":
+            model = _neural_.ParticleOriginNetwork(
+                particle_size,
+                event_size,
+                particle_hidden_sizes=[1024, 256, 256, 256, 256, 256, 64, 8],
+                event_hidden_sizes=[64, 64, 16, 4],
+                consolidation_hidden_sizes=[32, 32, 32, 8],
+                output_size=1,
+            )
+        elif model_type == "pair":
+            model = _neural_.ParticlePairNetwork(
+                particle_size,
+                event_size,
+                particle_hidden_sizes=[1024, 256, 256, 256, 256, 256, 64, 8],
+                event_hidden_sizes=[64, 64, 16, 4],
+                consolidation_hidden_sizes=[32, 32, 32, 8],
+                output_size=1,
+            )
+        model.load_state_dict(torch.load(model, map_location=torch.device("cpu")))
+        model.eval()
+
+        try:
+            config_tuple = model_configs[name_parts[-1]]
+            log_target, norm_target, variance_target = config_tuple
+        except KeyError:
+            log_target, norm_target, variance_target = False, False, False
+
+        if (norm_target and name_parts[-1] != "z"):
+            norm_dataset = _class_.H5EgammaDataset(
+                files=h5_egam_files,
+                mix_files=h5_data_files,
+                mixture_ratio=mixture_ratio,
+                mixture_seed=mix_seed,
+                exclude_features=["truth"],
+                exclude_fields = valid_fields,
+                valid_fields = valid_fields,
+                y_source = "truth",
+                fallback_source = "egammas",
+                y_field = [name_parts[-1]]
+            )
+            norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=1_000_000, batch_size=batch_size, log_target=log_target)
+        elif norm_target:
+            norm_dataset = _class_.ZPairDataset(
+                files=h5_egam_files,
+                mix_files=h5_data_files,
+                mixture_ratio=mixture_ratio,
+                mixture_seed=mix_seed,
+                exclude_features=["truth"],
+                exclude_fields = valid_fields,
+                valid_fields = valid_fields,
+                y_source = "truth",
+                fallback_source = "egammas",
+                y_field = [name_parts[-1]]
+            )
+            norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=1_000_000, batch_size=batch_size, log_target=log_target, z_target=True)
+
+        mc_predictions = _train_.predict(model, mc_dataset, batch_size=batch_size, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
+        data_predictions = _train_.predict(model, data_dataset, batch_size=batch_size, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
+        np.savetxt(csv_mc_file, mc_predictions, delimiter=",")
+        np.savetxt(csv_data_file, data_predictions, delimiter=",")
+
+
+        if model_type == "egamma":
+            mc_pair_predictions = electron_predictions_to_pair_predictions(mc_predictions, mc_dataset, pair_mc_dataset)
+            data_pair_predictions = electron_predictions_to_pair_predictions(data_predictions, data_dataset, pair_data_dataset)
+
+            csv_mc_pair_file = csv_path / f"{name_parts[-1]}_paired_predictions_mc.csv"
+            csv_data_pair_file = csv_path / f"{name_parts[-1]}_paired_predictions_data.csv"
+
+            np.savetxt(csv_mc_pair_file, mc_pair_predictions, delimiter=",")
+            np.savetxt(csv_data_pair_file, data_pair_predictions, delimiter=",")
+
+            pair_mc_dataset.close()
+            pair_data_dataset.close()
+
+    
+def datasets_to_csv_files(
+    h5_mc_files: list[Path] | list[str],
+    h5_data_files: list[Path] | list[str],
+    csv_path: Path | str,
+    valid_fields: dict[str, bool] | None = None,
+    batch_size: int = 4096,
+) -> None:
+    """
+    Convert datasets to CSV files.
+
+    Arguments:
+    - datasets (list of Dataset): List of datasets to convert.
+    - csv_path (Path or str): Path to the output CSV file.
+
+    Keywords:
+    - batch_size (int): The number of samples to process in each batch. Default is 4096.
+    """
+    csv_path = Path(csv_path)
+    mc_dataset = _class_.H5EgammaDataset(
+        files=h5_mc_files,
+        exclude_features=["truth"],
+        exclude_fields=valid_fields,
+        valid_fields=valid_fields,
+        y_source="truth",
+        y_field=["pt", "eta", "phi"],
+    )
+    data_dataset = _class_.H5EgammaDataset(
+        files=h5_data_files,
+        exclude_features=["truth"],
+        exclude_fields=valid_fields,
+        valid_fields=valid_fields,
+        y_source="egammas",
+        y_field=["pt", "eta", "phi"],
+    )
+    mc_loader = DataLoader(_misc_._TargetOnlyDataset(mc_dataset), batch_size=batch_size, shuffle=False)
+    data_loader = DataLoader(_misc_._TargetOnlyDataset(data_dataset), batch_size=batch_size, shuffle=False)
+
+    pt_truth_mc = []
+    eta_truth_mc = []
+    phi_truth_mc = []
+    for target in mc_loader:
+        pt_truth_mc.append(target[:, 0].numpy())
+        eta_truth_mc.append(target[:, 1].numpy())
+        phi_truth_mc.append(target[:, 2].numpy())
+    pt_truth_mc = np.concatenate(pt_truth_mc)
+    eta_truth_mc = np.concatenate(eta_truth_mc)
+    phi_truth_mc = np.concatenate(phi_truth_mc)
+
+    pt_truth_data = []
+    eta_truth_data = []
+    phi_truth_data = []
+    for target in data_loader:
+        pt_truth_data.append(target[:, 0].numpy())
+        eta_truth_data.append(target[:, 1].numpy())
+        phi_truth_data.append(target[:, 2].numpy())
+    pt_truth_data = np.concatenate(pt_truth_data)
+    eta_truth_data = np.concatenate(eta_truth_data)
+    phi_truth_data = np.concatenate(phi_truth_data)
+
+    np.savetxt(csv_path / "pt_egamma_truth_mc.csv", pt_truth_mc, delimiter=",")
+    np.savetxt(csv_path / "eta_egamma_truth_mc.csv", eta_truth_mc, delimiter=",")
+    np.savetxt(csv_path / "phi_egamma_truth_mc.csv", phi_truth_mc, delimiter=",")
+    np.savetxt(csv_path / "pt_egamma_truth_data.csv", pt_truth_data, delimiter=",")
+    np.savetxt(csv_path / "eta_egamma_truth_data.csv", eta_truth_data, delimiter=",")
+    np.savetxt(csv_path / "phi_egamma_truth_data.csv", phi_truth_data, delimiter=",")
+
+    mc_pair_dataset = _class_.ZPairDataset(
+        files=h5_mc_files,
+        exclude_features=["truth"],
+        exclude_fields=valid_fields,
+        valid_fields=valid_fields,
+        y_source="egammas",
+        y_field=["truthOrigin"],
+    )
+    data_pair_dataset = _class_.ZPairDataset(
+        files=h5_data_files,
+        exclude_features=["truth"],
+        exclude_fields=valid_fields,
+        valid_fields=valid_fields,
+        y_source="egammas",
+        y_field=["passid_Medium"],
+    )
+
+    mc_pair_loader = DataLoader(_misc_._TargetOnlyDataset(mc_pair_dataset), batch_size=batch_size, shuffle=False)
+    data_pair_loader = DataLoader(_misc_._TargetOnlyDataset(data_pair_dataset), batch_size=batch_size, shuffle=False)
+
+    origin_truth_mc = []
+    for target in mc_pair_loader:
+        origin_truth_mc.append(target[:, 0] * target[:, 1]) 
+    origin_truth_mc = np.concatenate(origin_truth_mc)
+
+    origin_truth_data = []
+    for target in data_pair_loader:
+        origin_truth_data.append(target[:, 0] * target[:, 1])
+    origin_truth_data = np.concatenate(origin_truth_data)
+
+    np.savetxt(csv_path / "origin_pair_truth_mc.csv", origin_truth_mc, delimiter=",")
+    np.savetxt(csv_path / "origin_pair_truth_data.csv", origin_truth_data, delimiter=",")
+
+    pt_pair_truth_mc = electron_predictions_to_pair_predictions(pt_truth_mc, mc_dataset, mc_pair_dataset)
+    eta_pair_truth_mc = electron_predictions_to_pair_predictions(eta_truth_mc, mc_dataset, mc_pair_dataset)
+    phi_pair_truth_mc = electron_predictions_to_pair_predictions(phi_truth_mc, mc_dataset, mc_pair_dataset)
+    pt_pair_truth_data = electron_predictions_to_pair_predictions(pt_truth_data, data_dataset, data_pair_dataset)
+    eta_pair_truth_data = electron_predictions_to_pair_predictions(eta_truth_data, data_dataset, data_pair_dataset)
+    phi_pair_truth_data = electron_predictions_to_pair_predictions(phi_truth_data, data_dataset, data_pair_dataset)
+
+    np.savetxt(csv_path / "pt_pair_truth_mc.csv", pt_pair_truth_mc, delimiter=",")
+    np.savetxt(csv_path / "eta_pair_truth_mc.csv", eta_pair_truth_mc, delimiter=",")
+    np.savetxt(csv_path / "phi_pair_truth_mc.csv", phi_pair_truth_mc, delimiter=",")
+    np.savetxt(csv_path / "pt_pair_truth_data.csv", pt_pair_truth_data, delimiter=",")
+    np.savetxt(csv_path / "eta_pair_truth_data.csv", eta_pair_truth_data, delimiter=",")
+    np.savetxt(csv_path / "phi_pair_truth_data.csv", phi_pair_truth_data, delimiter=",")
+
+    z_pair_truth_mc = _misc_._compute_z_mass(pt_pair_truth_mc[:, 0], eta_pair_truth_mc[:, 0], phi_pair_truth_mc[:, 0], pt_pair_truth_mc[:, 1], eta_pair_truth_mc[:, 1], phi_pair_truth_mc[:, 1])
+    z_pair_truth_data = _misc_._compute_z_mass(pt_pair_truth_data[:, 0], eta_pair_truth_data[:, 0], phi_pair_truth_data[:, 0], pt_pair_truth_data[:, 1], eta_pair_truth_data[:, 1], phi_pair_truth_data[:, 1])
+
+    np.savetxt(csv_path / "z_mass_pair_truth_mc.csv", z_pair_truth_mc, delimiter=",")
+    np.savetxt(csv_path / "z_mass_pair_truth_data.csv", z_pair_truth_data, delimiter=",")
