@@ -1,117 +1,148 @@
-def main():
-    from pathlib import Path
-    from torch.utils.data import Sampler, DataLoader, random_split
-    import torch
-    import h5py
-    from functions_library import dataset_classes, data_loading, neural_models, model_training, misc_functions
+def _find_h5_files(base_string: str ) -> tuple:
+    egam1_str = base_string + "user.amoranch.361106.e3601_s3681_r13167_p4940.egd.electrons-cell_trial.EGAM1.25_0_63.3afd5d9_output.h5"
+    egam7_str = base_string + "user.amoranch.423300.e3848_s3681_r13167_p4940.egd.electrons-cell_trial.EGAM7.25_0_63.3afd5d9_output.h5"
+    data_str = base_string + "user.amoranch.data15_13TeV.data15_13TeV.egd.electrons-cells-data.EGAM1.25_0_63.44b1f75_output.h5"
+    name_strings = ["MC_EGAM1", "MC_EGAM7", "DATA_EGAM", "MC_EGAM"]
+    full_strings = [egam1_str, egam7_str, data_str]
+    h5_files_dir = data_loading.create_path_lists(full_strings, outputs=name_strings, mixing_list = [(0, 1)], seed=0)
+    h5_files_egam1 = h5_files_dir[name_strings[0]]
+    h5_files_egam7 = h5_files_dir[name_strings[1]]
+    h5_files_data = h5_files_dir[name_strings[-2]]
+    h5_files_egam = h5_files_dir[name_strings[-1]]
 
-    notebook_dir = Path.cwd()
-    group_dir = notebook_dir.parent.parent.parent.parent
-    h5_dirs_path = group_dir / "morancho/ATLAS_Open_Data/Zee_Analysis/h5"
+    return h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam
 
 
-    # Choose two folders from the same particle type and simulation category.
-    source_1_dir = h5_dirs_path / "user.amoranch.361106.e3601_s3681_r13167_p4940.egd.electrons-cell_trial.EGAM1.25_0_63.3afd5d9_output.h5"
-    source_2_dir = h5_dirs_path / "user.amoranch.423300.e3848_s3681_r13167_p4940.egd.electrons-cell_trial.EGAM7.25_0_63.3afd5d9_output.h5"
-    source_3_dir = h5_dirs_path / "user.amoranch.data15_13TeV.data15_13TeV.egd.electrons-cells-data.EGAM1.25_0_63.44b1f75_output.h5"
-
-    h5_files_egam1 = sorted(
-        path for path in source_1_dir.iterdir() if path.is_file() and path.suffix == ".h5"
-    )
-    h5_files_egam7 = sorted(
-        path for path in source_2_dir.iterdir() if path.is_file() and path.suffix == ".h5"
-    )
-    h5_files_data = sorted(
-        path for path in source_3_dir.iterdir() if path.is_file() and path.suffix == ".h5"
-    )
-
-    if not h5_files_egam1:
-        raise FileNotFoundError(f"No files found in {source_1_dir}")
-    if not h5_files_egam7:
-        raise FileNotFoundError(f"No files found in {source_2_dir}")
-    if not h5_files_data:
-        raise FileNotFoundError(f"No files found in {source_3_dir}")
-
-    len_egam1 = len(h5_files_egam1)
-    len_egam7 = len(h5_files_egam7)
-    len_data = len(h5_files_data)
-
-    egam1_split = int(len_egam1 * 0.8)
-    egam7_split = int(len_egam7 * 0.8)
-
-    mean_dataset = dataset_classes.H5EgammaDataset(
-        h5_files_egam1[:egam1_split],
-        mix_files = h5_files_egam7[:egam7_split],
-        exclude_features = ["truth"],
-        exclude_fields = {"egammas": ["truthOrigin", "truthType"]},
-        y_source = "egammas",
-        y_field = "truthOrigin",
-        mixture_ratio = 0.5
-    )
-
-    means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=1000000, batch_size=4096)
-
-    train_dataset = dataset_classes.ZPairDataset(
-        h5_files_egam1[:egam1_split],
-        mix_files = h5_files_egam7[:egam7_split],
-        exclude_features = ["truth"],
-        exclude_fields = {"egammas": ["truthOrigin", "truthType"]},
-        y_source = "egammas",
-        y_field = "truthOrigin",
-        mixture_ratio = 0.5
-    )
-
-    val_dataset = dataset_classes.ZPairDataset(
-        h5_files_egam1[egam1_split:],
-        mix_files = h5_files_egam7[egam7_split:],
-        exclude_features = ["truth"],
-        exclude_fields = {"egammas": ["truthOrigin", "truthType"]},
-        y_source = "egammas",
-        y_field = "truthOrigin",
-        mixture_ratio = 0.5
-    )
-
-    test_dataset = dataset_classes.ZPairDataset(
-        h5_files_data,
-        exclude_features = ["truth"],
-        exclude_fields = {"egammas": ["truthOrigin", "truthType"]},
-        y_source = None,
-        y_field = None,
-    )
-
+def _train():
     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
-    train_sampler = data_loading.ShuffledContiguousBatchSampler(len(train_dataset), batch_size=4096, dataset=train_dataset)
-    train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, num_workers=16, prefetch_factor=2, persistent_workers=True, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=4096, shuffle=False, num_workers=16, prefetch_factor=2, persistent_workers=True, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=4096, shuffle=False, num_workers=16, prefetch_factor=2, persistent_workers=True, pin_memory=True)
+    # Choose two folders from the same particle type and simulation category.
+    base_string = "/groups/hep/morancho/ATLAS_Open_Data/Zee_Analysis/h5"
+    h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
-    particle_fields = [field for field in train_dataset.fields if not field.startswith("eventwise_")]
-    event_fields = [field for field in train_dataset.fields if field.startswith("eventwise_")]
-    particle_size = len(particle_fields) // 2
-    if len(particle_fields) % 2 != 0:
-        raise ValueError("Pair particle fields are not evenly split between the two particles.")
+    valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], "truth": ["pt", "eta", "phi"]}
+    variables = ["pt", "eta", "phi", "z", "origin"]
 
-    model_origin = neural_models.ParticlePairNetwork(
-        particle_size,
-        len(event_fields),
-        particle_hidden_sizes=[1024, 256, 256, 256, 256, 256, 64, 8],
-        event_hidden_sizes=[64, 64, 16, 4],
-        consolidation_hidden_sizes=[32, 32, 32, 8],
-        output_size=1,
-    ).to(device)
-    optimizer = torch.optim.Adam(model_origin.parameters(), lr=0.001)
-    loss_function = torch.nn.BCEWithLogitsLoss()
+    for variable in variables:
+        dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin"] else dataset_classes.H5EgammaDataset
+        nn_model = neural_models.ParticlePairNetwork if variable in ["z", "origin"] else neural_models.ParticleOriginNetwork
+        loss_class = torch.nn.BCEWithLogitsLoss() if variable == "origin" else training_classes.AngularGaussianNLLLoss() if variable in ["phi"] else training_classes.GaussianNLLLoss()
 
-    model_origin, train_losses, val_losses = model_training.train_model(model_origin, optimizer, loss_function, train_loader, val_loader, num_epochs=10, device=device, means=means, stds=stds, binary_target=13)
-    torch.save(model_origin.state_dict(), "model_origin_pair_full.pth")
+        field = ["truthOrigin", "passid_Medium"] if variable == "origin" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [variable, variable]
+        output_size = 1 if variable == "origin" else 2
 
-    predictions_data = model_training.predict(model_origin, test_loader, device=device, means=means, stds=stds)
-    mask = predictions_data > 0
-    misc_functions.find_Z_peak_pairs(
-        source_3_dir,
-        csv_output_path="z_masses_full.csv",
-        global_mask=mask,
+        binary_target = 13 if variable == "origin" else False
+        norm_target = True if variable in ["z", "pt"] else False
+        z_target = True if variable == "z" else False
+        log_target = False
+
+        variable_name = "pair_" + variable if variable in ["z", "origin"] else variable
+
+        model, train_losses, val_losses, means, stds, norm_target = model_training.compressed_training_function(
+            h5_files = h5_files_egam,
+            mix_files = h5_files_data,
+            mixture_ratio = 0.66,
+            dataset_class = dataset_class,
+            nn_model = nn_model,
+            model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
+            loss_function = loss_class,
+            optimizer_class = torch.optim.Adam,
+            batch_size = 4096,
+            num_workers = 15,
+            exclude_features = ["truth"],
+            exclude_fields = valid_fields,
+            y_source = "truth",
+            y_field = field[0],
+            fallback_source = "egammas",
+            fallback_field = field[1],
+            valid_fields = valid_fields,
+            log_target = log_target,
+            binary_target = binary_target,
+            z_target = z_target,
+            norm_target = norm_target,
+            pin_memory = True,
+            num_epochs = 20,
+            sample_size = 1_000_000,
+            domain_adversary = True,
+            domain_loss_function = torch.nn.BCEWithLogitsLoss(),
+            domain_loss_weight = 0.05,
+            gradient_reversal_weight = 0.50,
+            mixed_target_loss_weight = 0.20,
+            domain = "bool",
+            periodic_save_interval = 5,
+            periodic_save_path = f"./models_library/model_{variable_name}.pth",
+        )
+
+        torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(np.arange(len(train_losses)), train_losses, label="Training Loss")
+        plt.plot(np.arange(len(val_losses)), val_losses, label="Validation Loss")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.title(f"Training and Validation Loss for {variable_name}")
+        plt.legend()
+        plt.savefig(f"./plots/loss_plot_{variable_name}.png")
+        plt.close()
+
+def _write():
+    base_string = "/groups/hep/morancho/ATLAS_Open_Data/Zee_Analysis/h5"
+    h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
+
+    validation_split = 0.25
+    train_size_egam = int((1 - validation_split) * len(h5_files_egam))
+    train_size_data = int((1 - validation_split) * len(h5_files_data))
+
+    models_path = Path("./models_library")
+    csv_path = Path("./csv_library")
+    csv_path.mkdir(parents=True, exist_ok=True)
+
+    valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], "truth": ["pt", "eta", "phi"]}
+    model_configs = {"z" : [False, True, True], "pt" : [False, True, True], "eta" : [False, False, True], "phi" : [False, False, True], "origin" : [False, True, False]}
+    data_loading.models_to_csv_files(
+        models_path,
+        csv_path,
+        h5_files_egam[train_size_egam:],
+        h5_files_data[train_size_data:],
+        valid_fields = valid_fields,
+        batch_size = 4096,
+        num_workers = 15,
+        pin_memory = True,
+        max_rows = 1_000_000,
+        model_type = "egamma",
+        model_configs = model_configs,
     )
+    data_loading.models_to_csv_files(
+        models_path,
+        csv_path,
+        h5_files_egam[train_size_egam:],
+        h5_files_data[train_size_data:],
+        valid_fields = valid_fields,
+        batch_size = 4096,
+        num_workers = 15,
+        pin_memory = True,
+        max_rows = 1_000_000,
+        model_type = "pair",
+        model_configs = model_configs,
+    )
+    data_loading.datasets_to_csv_files(
+        h5_files_egam[train_size_egam:],
+        h5_files_data[train_size_data:],
+        csv_path,
+        valid_fields = valid_fields,
+        batch_size = 4096,
+        num_workers = 15,
+        pin_memory = True,
+        max_rows = 1_000_000,
+        )
+
 
 if __name__ == "__main__":
-    main()
+    import torch
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from functions_library import dataset_classes, neural_models, training_classes, model_training, data_loading
+    from pathlib import Path
+
+    _train()
+    _write()
+    print("Training and writing completed successfully. It is a literal miracle.")
