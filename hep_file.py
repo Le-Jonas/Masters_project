@@ -16,7 +16,7 @@ def _find_h5_files(base_string: str ) -> tuple:
 def _train():
     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
     # Choose two folders from the same particle type and simulation category.
-    base_string = "/groups/hep/morancho/ATLAS_Open_Data/Zee_Analysis/h5"
+    base_string = "/groups/hep/morancho/ATLAS_Open_Data/Zee_Analysis/h5/"
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], "truth": ["pt", "eta", "phi"]}
@@ -65,7 +65,7 @@ def _train():
             domain_adversary = True,
             domain_loss_function = torch.nn.BCEWithLogitsLoss(),
             domain_loss_weight = 0.05,
-            gradient_reversal_weight = 0.50,
+            gradient_reversal_strength = 0.50,
             mixed_target_loss_weight = 0.20,
             domain = "bool",
             periodic_save_interval = 5,
@@ -85,7 +85,7 @@ def _train():
         plt.close()
 
 def _write():
-    base_string = "/groups/hep/morancho/ATLAS_Open_Data/Zee_Analysis/h5"
+    base_string = "/groups/hep/morancho/ATLAS_Open_Data/Zee_Analysis/h5/"
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
     validation_split = 0.25

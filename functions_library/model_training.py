@@ -45,6 +45,22 @@ def _call_with_inputs(function : callable, inputs : torch.Tensor | tuple, eventw
         return function(*inputs, eventwise_features)
     return function(inputs, eventwise_features)
 
+def _predict_mask(
+    mask_model: torch.nn.Module,
+    inputs: torch.Tensor | tuple,
+    eventwise_features: torch.Tensor,
+) -> torch.Tensor:
+    """Return a boolean mask from one positive logit per input pair."""
+    with torch.inference_mode():
+        mask_output = _call_with_inputs(mask_model, inputs, eventwise_features)
+    if mask_output.numel() != eventwise_features.shape[0]:
+        raise ValueError(
+            "mask_model must return exactly one logit per input pair; "
+            f"got shape {tuple(mask_output.shape)} for batch size "
+            f"{eventwise_features.shape[0]}."
+        )
+    return mask_output.reshape(-1) > 0
+
 def _normalize_inputs(inputs : torch.Tensor | tuple, means : torch.Tensor, stds : torch.Tensor) -> torch.Tensor | tuple:
     """
     Normalize inputs using provided means and standard deviations.
@@ -113,13 +129,19 @@ def _prepare_binary_targets(targets : torch.Tensor, domain_targets : torch.Tenso
 
     Returns:
     - torch.Tensor: The prepared binary target tensor.
+
+    Mixed-domain targets retain the original batch order so they remain
+    aligned with the corresponding inputs.
     """
     if domain_targets is None or domain == "int":
         targets = torch.eq(targets, binary_value).float()
     elif domain == "bool":
-        targets_0 = torch.eq(targets[domain_targets == 0], binary_value).float()
-        targets_1 = targets[domain_targets == 1].float()
-        targets = torch.cat((targets_0, targets_1), dim=0)
+        binary_targets = torch.eq(targets, binary_value).float()
+        domain_mask = domain_targets.reshape(
+            domain_targets.shape[0],
+            *([1] * (targets.ndim - 1)),
+        )
+        targets = torch.where(domain_mask == 0, binary_targets, targets)
     else:
         raise ValueError(f"Invalid domain value: {domain}. Must be 'bool' or 'int'.")
     if targets.ndim >= 3 and targets.shape[-2] == 2:
@@ -300,7 +322,8 @@ def train_model(
         mixed_target_loss_weight : float = 0.25,
         discard_remainder : bool = True,
         periodic_save_interval : int | None = None,
-        periodic_save_path : str | None = None
+        periodic_save_path : str | None = None,
+        mask_model : torch.nn.Module | None = None
 
     ) -> tuple[torch.nn.Module, list, list]:
     """
@@ -393,6 +416,11 @@ def train_model(
     stds_i, stds_e = _move_to_device(stds, device)
 
     binary_value = torch.as_tensor(binary_target, dtype=torch.float32, device=device) if binary_target is not False else None
+    if mask_model is not None:
+        mask_model.to(device)
+        mask_model.eval()
+        for parameter in mask_model.parameters():
+            parameter.requires_grad_(False)
 
     for epoch in range(num_epochs):
         model.train()
@@ -422,10 +450,28 @@ def train_model(
             inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})
             eventwise_features = torch.nan_to_num(eventwise_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
 
+            if mask_model is not None:
+                mask = _predict_mask(mask_model, inputs, eventwise_features)
+                if mask.sum() == 0:
+                    continue
+            else:
+                mask = None
+
+            if mask is not None:
+                if isinstance(inputs, tuple):
+                    inputs = (inputs[0][mask], inputs[1][mask])
+                else:
+                    inputs = inputs[mask]
+                eventwise_features = eventwise_features[mask]
+
             optimizer.zero_grad()
             outputs = _call_with_inputs(model, inputs, eventwise_features)
 
             targets = targets.to(dtype=outputs.dtype)
+            if mask is not None:
+                targets = targets[mask]
+                if domain_targets is not None:
+                    domain_targets = domain_targets[mask]
             
             loss = _weighted_task_loss(
                 loss_function,
@@ -467,7 +513,11 @@ def train_model(
                 end='\r',
             )
 
-        if samples_seen != len(train_loader.dataset) and not discard_remainder:
+        if samples_seen == 0:
+            raise ValueError("mask_model rejected every training sample.")
+        if samples_seen != len(train_loader.dataset) and not (
+            discard_remainder or mask_model is not None
+        ):
             raise RuntimeError(
                 f"Training loader yielded {samples_seen} samples, "
                 f"but its dataset contains {len(train_loader.dataset)}."
@@ -490,11 +540,12 @@ def train_model(
             mixed_target_loss_weight=mixed_target_loss_weight,
             domain=domain,
             z_target=z_target,
-            norm_target=norm_target
+            norm_target=norm_target,
+            mask_model=mask_model
         )
         val_losses.append(val_loss)
         train_losses.append(epoch_loss)
-        print(300*" ", end='\r')  # Clear the line
+        print(200*" ", end='\r')  # Clear the line
         print(f'Epoch {epoch+1}/{num_epochs}, Training Loss: {epoch_loss:.4f}, Validation Loss: {val_loss:.4f}')
 
         # Save the best model based on validation loss
@@ -537,7 +588,8 @@ def validate_model(
         domain_loss_weight : float = 1.0,
         mixed_target_loss_weight : float = 0.25,
         z_target : bool = False,
-        norm_target : tuple | None = None
+        norm_target : tuple | None = None,
+        mask_model : torch.nn.Module | None = None
         ) -> float:
     """
     Validate a PyTorch model using the provided validation data loader and loss function.
@@ -615,10 +667,29 @@ def validate_model(
 
             inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})
             event_features = torch.nan_to_num(event_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
+
+            if mask_model is not None:
+                mask = _predict_mask(mask_model, inputs, event_features)
+                if mask.sum() == 0:
+                    continue
+            else:
+                mask = None
+
+            if mask is not None:
+                if isinstance(inputs, tuple):
+                    inputs = (inputs[0][mask], inputs[1][mask])
+                else:
+                    inputs = inputs[mask]
+                event_features = event_features[mask]
             
             outputs = _call_with_inputs(model, inputs, event_features)
 
             targets = targets.to(dtype=outputs.dtype)
+            if mask is not None:
+                targets = targets[mask]
+                if domain_targets is not None:
+                    domain_targets = domain_targets[mask]
+
             task_loss = _weighted_task_loss(
                 loss_function,
                 outputs,
@@ -648,15 +719,17 @@ def validate_model(
             batch_size = targets.size(0)
             val_loss += loss.item() * batch_size
             samples_seen += batch_size
-            print(300*" ", end='\r')  # Clear the line
+            print(200*" ", end='\r')  # Clear the line
             print(f"Validation batch {batch+1}/{expected_batches}: Loss = {loss.item():.4f}", end='\r')
 
-    if samples_seen != len(val_loader.dataset):
+    if samples_seen == 0:
+        raise ValueError("mask_model rejected every validation sample.")
+    if samples_seen != len(val_loader.dataset) and mask_model is None:
         raise RuntimeError(
             f"Validation loader yielded {samples_seen} samples, "
             f"but its dataset contains {len(val_loader.dataset)}."
         )
-    print(300*" ", end='\r')  # Clear the line
+    print(200*" ", end='\r')  # Clear the line
     val_loss /= samples_seen
     return val_loss
 
@@ -712,9 +785,9 @@ def predict(
                 outputs = _prepare_predict_outputs(outputs, device, norm_target, log_target, variance_target)
 
                 predictions.append(outputs.cpu().numpy())
-                print(300*" ", end='\r')  # Clear the line
+                print(200*" ", end='\r')  # Clear the line
                 print(f"Prediction batch {batch+1}/{expected_batches}: Predictions shape = {outputs.shape}", end='\r')
-            print(300*" ", end='\r')  # Clear the line
+            print(200*" ", end='\r')  # Clear the line
             print("Prediction completed")
     finally:
         if dataset is not None and previous_skip_target_reads is not None:
@@ -759,9 +832,7 @@ def compressed_training_function(
     norm_target : bool | None = None,
     periodic_save_interval : int | None = None,
     periodic_save_path : str | None = None,
-
-
-
+    use_mask : bool | str = False
 ) -> tuple[torch.nn.Module, list, list]:
     train_size_egam = int((1 - validation_split) * len(h5_files))
     train_size_data = int((1 - validation_split) * len(mix_files))
@@ -850,6 +921,20 @@ def compressed_training_function(
     else:
         model = use_old_model.to(device)
 
+    if use_mask is not False and use_mask is not None:
+        if not isinstance(use_mask, (str, bytes)):
+            raise TypeError("use_mask must be a checkpoint path or False.")
+        mask_kwargs = model_kwargs.copy()
+        mask_kwargs["output_size"] = 1
+        mask_model = nn_model(
+            particle_size,
+            len(event_fields),
+            **mask_kwargs
+        ).to(device)
+        mask_model.load_state_dict(torch.load(use_mask, map_location=device))
+    else:
+        mask_model = None
+
     if domain_adversary:
         domain_adversary = neural_models.DomainAdversary(
             embedding_size=embedding_size,
@@ -882,6 +967,7 @@ def compressed_training_function(
                                            z_target = z_target,
                                            norm_target = norm_target,
                                            periodic_save_interval = periodic_save_interval,
-                                           periodic_save_path = periodic_save_path
+                                           periodic_save_path = periodic_save_path,
+                                           mask_model = mask_model,
                                            )
     return model, train_losses, val_losses, means, stds, norm_target

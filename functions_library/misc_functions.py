@@ -237,9 +237,9 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
     for batch, targets in enumerate(target_loader):
         truth.append(targets[:, :, 0])
         pseudo_truth.append(targets[:, :, 1])
-        print(300*" ", end='\r')  # Clear the line
+        print(200*" ", end='\r')  # Clear the line
         print(f"Getting truthOrigin with batch {batch + 1}/{expected_batches}", end='\r')
-    print(300*" ", end='\r')  # Clear the line
+    print(200*" ", end='\r')  # Clear the line
 
     truth = np.concatenate(truth, axis=0) == 13
     truth = truth[:, 0] * truth[:, 1]
@@ -541,9 +541,9 @@ def _load_z_masses_from_files(z_masses_path : list[Path], dataloader_kwargs : di
     expected_batches = len(dataloader)
     for batch, target in enumerate(dataloader):
         z_masses.append(_compute_z_mass(target[:, 0, 0], target[:, 0, 1], target[:, 0, 2], target[:, 1, 0], target[:, 1, 1], target[:, 1, 2], e1 = target[:, 0, 3], e2 = target[:, 1, 3]))
-        print(300*" ", end='\r')  # Clear the line
+        print(200*" ", end='\r')  # Clear the line
         print(f"Getting Z masses with batch {batch + 1}/{expected_batches}", end='\r')
-    print(300*" ", end='\r')  # Clear the line
+    print(200*" ", end='\r')  # Clear the line
 
     return np.concatenate(z_masses)
 
@@ -638,10 +638,10 @@ def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size 
         feature_sum_event += safe_event_features.sum(dim=0)
         feature_squared_sum_event += (safe_event_features ** 2).sum(dim=0)
         count_event += finite_event.sum(dim=0)
-        print(300*" ", end='\r')  # Clear the line
+        print(200*" ", end='\r')  # Clear the line
         print(f"Calculating mean and std for normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
 
-    print(300*" ", end='\r')  # Clear the line
+    print(200*" ", end='\r')  # Clear the line
     means = feature_sum / count
     variances = feature_squared_sum / count - means ** 2
     stds = torch.sqrt(torch.clamp(variances, min=0))
@@ -723,11 +723,24 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
             targets = targets.double()
 
         if z_target:
-            if targets.ndim != 3 or targets.shape[1:] != (2, 4):
+
+            if targets.ndim != 3:
                 raise ValueError(
                     "z_target requires pair targets with shape "
-                    f"[batch, 2, 4], got {tuple(targets.shape)}"
-                )
+                    f"[batch, 2, 3|4], got {tuple(targets.shape)}"
+                )           
+            else:     
+                if targets.shape[1:] == (2, 4):
+                    e1 = targets[:, 0, 3]
+                    e2 = targets[:, 1, 3]
+                elif targets.shape[1:] == (2, 3):
+                    e1 = None
+                    e2 = None
+                else:
+                    raise ValueError(
+                        "z_target requires pair targets with shape "
+                        f"[batch, 2, 3|4], got {tuple(targets.shape)}"
+                    )
             targets = _compute_z_mass(
                 targets[:, 0, 0],
                 targets[:, 0, 1],
@@ -735,8 +748,8 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
                 targets[:, 1, 0],
                 targets[:, 1, 1],
                 targets[:, 1, 2],
-                e1 = targets[:, 0, 3],
-                e2 = targets[:, 1, 3],
+                e1 = e1,
+                e2 = e2,
             ).unsqueeze(1)
         elif targets.ndim != 2:
             raise ValueError(
@@ -762,10 +775,10 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
         target_squared_sum += (safe_targets ** 2).sum(dim=0)
         count += finite.sum(dim=0)
 
-        print(300*" ", end='\r')  # Clear the line
+        print(200*" ", end='\r')  # Clear the line
         print(f"Calculating mean and std for target normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
 
-    print(300*" ", end='\r')  # Clear the line
+    print(200*" ", end='\r')  # Clear the line
     means = target_sum / count
     variances = target_squared_sum / count - means ** 2
     stds = torch.sqrt(torch.clamp(variances, min=0))
@@ -905,7 +918,7 @@ def find_Z_peak(
                 e1 = values[3], e2 = values[7]
             ))
             z_count = len(first_rows)
-        print(300*" ", end='\r')  # Clear the line
+        print(200*" ", end='\r')  # Clear the line
         print(f"Processed file {j+1}/{len(h5_files)}: Found {z_count} Z masses", end='\r')
 
     if global_mask is not False and global_mask_index != len(global_mask):
@@ -913,7 +926,7 @@ def find_Z_peak(
             f"Global mask length {len(global_mask)} does not match "
             f"the expected selected-row length {global_mask_index}."
         )
-    print(300*" ", end='\r')  # Clear the line
+    print(200*" ", end='\r')  # Clear the line
     print(f"Saving Z masses to {csv_output_path}")
     np.savetxt(csv_output_path, z_masses)
     return 1

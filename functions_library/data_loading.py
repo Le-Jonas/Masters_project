@@ -424,13 +424,13 @@ def electron_predictions_to_pair_predictions(
     electron_dataset: _class_.H5EgammaDataset,
     pair_dataset: _class_.ZPairDataset,
 ) -> np.ndarray:
-    """Map [e_num] electron predictions to [z_pair_num, 2] pair predictions."""
+    """Map [e_num] or [e_num, 2] electron predictions to [z_pair_num, 2] or [z_pair_num, 4] pair predictions."""
 
     predictions = np.asarray(electron_predictions)
 
-    if predictions.ndim != 1:
+    if predictions.ndim != 1 and predictions.ndim != 2:
         raise ValueError(
-            f"electron_predictions must have shape [e_num], got {predictions.shape}"
+            f"electron_predictions must have shape [e_num] or [e_num, 2], got {predictions.shape}"
         )
 
     if len(predictions) != len(electron_dataset):
@@ -444,7 +444,10 @@ def electron_predictions_to_pair_predictions(
             "electron_dataset and pair_dataset must use the same files in the same order"
         )
 
-    pair_predictions = np.empty((len(pair_dataset), 2), dtype=predictions.dtype)
+    if predictions.ndim == 1:
+        pair_predictions = np.empty((len(pair_dataset), 2), dtype=predictions.dtype)
+    else:
+        pair_predictions = np.empty((len(pair_dataset), 4), dtype=predictions.dtype)
 
     output_start = 0
 
@@ -474,9 +477,14 @@ def electron_predictions_to_pair_predictions(
         offset = electron_dataset.offsets[file_index]
         first_global = offset + first_local
         second_global = offset + second_local
-
-        pair_predictions[output_start:output_end, 0] = predictions[first_global]
-        pair_predictions[output_start:output_end, 1] = predictions[second_global]
+        if predictions.ndim == 1:
+            pair_predictions[output_start:output_end, 0] = predictions[first_global]
+            pair_predictions[output_start:output_end, 1] = predictions[second_global]
+        else:
+            pair_predictions[output_start:output_end, 0] = predictions[first_global, 0]
+            pair_predictions[output_start:output_end, 1] = predictions[first_global, 1]
+            pair_predictions[output_start:output_end, 2] = predictions[second_global, 0]
+            pair_predictions[output_start:output_end, 3] = predictions[second_global, 1]
 
         output_start = output_end
 
@@ -597,14 +605,15 @@ def models_to_csv_files(models_path : Path | str,
     else:
         raise ValueError(f"Invalid model_type: {model_type}. Must be 'egamma' or 'pair'.")
 
-    for model in models_path.glob("*.pt"):
-        name = model.stem
+    for model_str in models_path.glob("*.pth"):
+        name = model_str.stem
         name_parts = name.split("_")
+        output_size = 1 #if name_parts[-1] in ["origin", "pt", "z"] else 2
 
-        if name_parts[1] == "pair" and model_type == "egamma":
+        if (name_parts[1] == "pair" and model_type == "egamma"):
             print(f"Skipping model {name} because it is a pair model and model_type is 'egamma'.")
             continue
-        if name_parts[1] != "pair" and model_type == "pair":
+        if (name_parts[1] != "pair" and model_type == "pair"):
             print(f"Skipping model {name} because it is an egammas model and model_type is 'pair'.")
             continue
         if (name_parts[-1] == "new" or name_parts[-1] == "old"):
@@ -614,7 +623,7 @@ def models_to_csv_files(models_path : Path | str,
         csv_mc_file = csv_path / f"{name_parts[-1]}_{model_type}_predictions_mc.csv"
         csv_data_file = csv_path / f"{name_parts[-1]}_{model_type}_predictions_data.csv"
 
-        print(f"Processing model: {model.name}")
+        print(f"Processing model: {model_str.name}")
         if model_type == "egamma":
             model = _neural_.ParticleOriginNetwork(
                 particle_size,
@@ -622,7 +631,7 @@ def models_to_csv_files(models_path : Path | str,
                 particle_hidden_sizes=[1024, 256, 256, 256, 256, 256, 64, 8],
                 event_hidden_sizes=[64, 64, 16, 4],
                 consolidation_hidden_sizes=[32, 32, 32, 8],
-                output_size=1,
+                output_size=output_size,
             )
         elif model_type == "pair":
             model = _neural_.ParticlePairNetwork(
@@ -631,9 +640,9 @@ def models_to_csv_files(models_path : Path | str,
                 particle_hidden_sizes=[1024, 256, 256, 256, 256, 256, 64, 8],
                 event_hidden_sizes=[64, 64, 16, 4],
                 consolidation_hidden_sizes=[32, 32, 32, 8],
-                output_size=1,
+                output_size=output_size,
             )
-        model.load_state_dict(torch.load(model, map_location=torch.device("cpu")))
+        model.load_state_dict(torch.load(model_str, map_location=torch.device("cpu")))
         model.eval()
 
         try:
@@ -667,15 +676,15 @@ def models_to_csv_files(models_path : Path | str,
                 valid_fields = valid_fields,
                 y_source = "truth",
                 fallback_source = "egammas",
-                y_field = [name_parts[-1]]
+                y_field = ["pt", "eta", "phi"]
             )
-            norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=1_000_000, batch_size=batch_size, log_target=log_target, z_target=True, num_workers=num_workers, pin_memory=pin_memory)
+            norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=500_000, batch_size=batch_size, log_target=log_target, z_target=True, num_workers=num_workers, pin_memory=pin_memory)
 
         mc_loader = DataLoader(mc_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
         data_loader = DataLoader(data_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
-        mc_predictions = _train_.predict(model, mc_loader, batch_size=batch_size, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
-        data_predictions = _train_.predict(model, data_loader, batch_size=batch_size, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
+        mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
+        data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
         np.savetxt(csv_mc_file, mc_predictions[:max_rows], delimiter=",")
         np.savetxt(csv_data_file, data_predictions[:max_rows], delimiter=",")
 
