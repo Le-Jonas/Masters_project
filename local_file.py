@@ -98,7 +98,7 @@ def _write():
     csv_path.mkdir(parents=True, exist_ok=True)
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], "truth": ["pt", "eta", "phi"]}
-    model_configs = {"z" : [False, True, False], "pt" : [False, True, False], "eta" : [False, False, True], "phi" : [False, False, True], "origin" : [False, False, False]}
+    model_configs = {"z" : [False, True, False], "pt" : [False, True, False], "eta" : [False, False, False], "phi" : [False, False, False], "origin" : [False, False, False]}
     data_loading.models_to_csv_files(
         models_path,
         csv_path,
