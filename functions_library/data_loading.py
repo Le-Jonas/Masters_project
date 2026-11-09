@@ -173,13 +173,18 @@ class ShuffledContiguousBatchSampler(Sampler):
 
 
 class BatchIterator(xgb.DataIter):
-    def __init__(self, loader):
+    def __init__(self, loader, binary_target=False):
         super().__init__()
         self.loader = loader
+        self.binary_target = binary_target
         self.iterator = None
+        self.batch_index = 0
+        self.n_features = None
 
     def reset(self):
         self.iterator = iter(self.loader)
+        self.batch_index = 0
+        self.n_features = None
 
     def next(self, input_data):
         try:
@@ -187,13 +192,68 @@ class BatchIterator(xgb.DataIter):
         except StopIteration:
             return False
 
-        first, second, eventwise, target, _domain = batch
+        particle, eventwise, target, domain = batch
 
-        X = torch.cat([first, second, eventwise], dim=1)
-        input_data(
-            data=X.numpy(),
-            label=target.numpy(),
+        X = torch.cat((particle, eventwise), dim=1)
+
+        X = torch.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if self.binary_target:
+            target = _train_._prepare_binary_targets(
+                target,
+                domain,
+                13,
+                domain="bool",
+            )
+
+        X_np = np.ascontiguousarray(
+            X.detach().cpu().numpy(),
+            dtype=np.float32,
         )
+        target_np = np.ascontiguousarray(
+            target.detach().cpu().numpy(),
+            dtype=np.float32,
+        ).reshape(-1)
+
+        if X_np.ndim != 2:
+            raise ValueError(
+                f"Batch {self.batch_index}: X has shape {X_np.shape}"
+            )
+
+        if target_np.ndim != 1:
+            raise ValueError(
+                f"Batch {self.batch_index}: target has shape {target_np.shape}"
+            )
+
+        if X_np.shape[0] != target_np.shape[0]:
+            raise ValueError(
+                f"Batch {self.batch_index}: "
+                f"{X_np.shape[0]} rows but {target_np.shape[0]} targets"
+            )
+
+        if self.n_features is None:
+            self.n_features = X_np.shape[1]
+        elif X_np.shape[1] != self.n_features:
+            raise ValueError(
+                f"Batch {self.batch_index}: expected {self.n_features} "
+                f"features, got {X_np.shape[1]}"
+            )
+
+        #if not np.isfinite(X_np).all():
+        #    bad = np.argwhere(~np.isfinite(X_np))[0]
+        #    raise ValueError(
+        #        f"Batch {self.batch_index}: non-finite feature at "
+        #        f"row={bad[0]}, column={bad[1]}"
+        #    )
+
+        if not np.isfinite(target_np).all():
+            raise ValueError(
+                f"Batch {self.batch_index}: non-finite target"
+            )
+
+        input_data(data=X_np, label=target_np)
+
+        self.batch_index += 1
         return True
 
 def h5_to_csv(
