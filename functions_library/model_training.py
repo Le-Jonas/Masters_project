@@ -133,7 +133,7 @@ def _prepare_binary_targets(targets : torch.Tensor, domain_targets : torch.Tenso
     Mixed-domain targets retain the original batch order so they remain
     aligned with the corresponding inputs.
     """
-    if domain_targets is None or domain == "int":
+    if (domain_targets is None or domain == "int"):
         targets = torch.eq(targets, binary_value).float()
     elif domain == "bool":
         binary_targets = torch.eq(targets, binary_value).float()
@@ -144,10 +144,10 @@ def _prepare_binary_targets(targets : torch.Tensor, domain_targets : torch.Tenso
         targets = torch.where(domain_mask == 0, binary_targets, targets)
     else:
         raise ValueError(f"Invalid domain value: {domain}. Must be 'bool' or 'int'.")
-    if targets.ndim >= 3 and targets.shape[-2] == 2:
+    if (targets.ndim >= 3 and targets.shape[-2] == 2):
         # Pair datasets store targets as (batch, two_particles, target_fields).
         targets = targets.all(dim=(-2, -1))
-    elif targets.shape[-1] == 2:
+    elif (targets.shape[-1] == 2 and targets.ndim == 2):
         targets = targets[:, 0] * targets[:, 1]
     return targets.reshape(-1)
 
@@ -457,21 +457,30 @@ def train_model(
             else:
                 mask = None
 
-            if mask is not None:
-                if isinstance(inputs, tuple):
-                    inputs = (inputs[0][mask], inputs[1][mask])
-                else:
-                    inputs = inputs[mask]
-                eventwise_features = eventwise_features[mask]
-
-            optimizer.zero_grad()
-            outputs = _call_with_inputs(model, inputs, eventwise_features)
-
-            targets = targets.to(dtype=outputs.dtype)
+            
             if mask is not None:
                 targets = targets[mask]
                 if domain_targets is not None:
                     domain_targets = domain_targets[mask]
+
+                target_mask = _prepare_binary_targets(targets[:, 1], domain_targets, 2, domain = domain)
+                target_mask = target_mask.to(dtype=torch.bool)
+                if target_mask.sum() == 0:
+                    continue
+                targets = targets[:, 0][target_mask]
+
+                if domain_targets is not None:
+                    domain_targets = domain_targets[target_mask]
+
+                if isinstance(inputs, tuple):
+                    inputs = (inputs[0][mask][target_mask], inputs[1][mask][target_mask])
+                else:
+                    inputs = inputs[mask][target_mask]
+                eventwise_features = eventwise_features[mask][target_mask]
+
+            optimizer.zero_grad()
+            outputs = _call_with_inputs(model, inputs, eventwise_features)
+            targets = targets.to(dtype=outputs.dtype)
             
             loss = _weighted_task_loss(
                 loss_function,
@@ -675,20 +684,30 @@ def validate_model(
             else:
                 mask = None
 
-            if mask is not None:
-                if isinstance(inputs, tuple):
-                    inputs = (inputs[0][mask], inputs[1][mask])
-                else:
-                    inputs = inputs[mask]
-                event_features = event_features[mask]
             
-            outputs = _call_with_inputs(model, inputs, event_features)
-
-            targets = targets.to(dtype=outputs.dtype)
             if mask is not None:
                 targets = targets[mask]
+
                 if domain_targets is not None:
                     domain_targets = domain_targets[mask]
+
+                target_mask = _prepare_binary_targets(targets[:, 1], domain_targets, 2, domain = domain)
+                target_mask = target_mask.to(dtype=torch.bool)
+                if target_mask.sum() == 0:
+                    continue
+                targets = targets[:, 0][target_mask]
+
+                if domain_targets is not None:
+                    domain_targets = domain_targets[target_mask]
+
+                if isinstance(inputs, tuple):
+                    inputs = (inputs[0][mask][target_mask], inputs[1][mask][target_mask])
+                else:
+                    inputs = inputs[mask][target_mask]
+                event_features = event_features[mask][target_mask]
+            
+            outputs = _call_with_inputs(model, inputs, event_features)
+            targets = targets.to(dtype=outputs.dtype)
 
             task_loss = _weighted_task_loss(
                 loss_function,
@@ -905,7 +924,7 @@ def compressed_training_function(
     particle_fields = [field for field in train_dataset.fields if not field.startswith("eventwise_")]
     event_fields = [field for field in train_dataset.fields if field.startswith("eventwise_")]
     
-    if len(particle_fields) % 2 == 0:
+    if dataset_class == dataset_classes.ZPairDataset:
         particle_size = len(particle_fields) // 2
         embedding_size = model_kwargs["particle_hidden_sizes"][-1] * 2 + model_kwargs["event_hidden_sizes"][-1]
     else:

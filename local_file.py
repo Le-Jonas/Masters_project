@@ -18,60 +18,86 @@ def _train():
     base_string = "C:/Users/jonas/Coding/Master/Main/h5/"
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
-    valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], "truth": ["pt", "eta", "phi"]}
-    variables = ["pt", "eta", "phi"]
+    valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
+    variables = ["pt"]
 
     for variable in variables:
         dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin"] else dataset_classes.H5EgammaDataset
         nn_model = neural_models.ParticlePairNetwork if variable in ["z", "origin"] else neural_models.ParticleOriginNetwork
-        loss_class = torch.nn.BCEWithLogitsLoss() if variable == "origin" else training_classes.AngularMSELoss() if variable in ["phi"] else torch.nn.MSELoss()
+        loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else torch.nn.MSELoss()
 
-        field = ["truthOrigin", "passid_Medium"] if variable == "origin" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [variable, variable]
+        field = ["truthOrigin"] if variable == "origin" else ["truthType", "passid_Medium"] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthOrigin"], [variable, "passid_Tight"]]
         output_size = 1 #if variable in ["origin", "pt", "z"] else 2
 
-        binary_target = 13 if variable == "origin" else False
+        binary_target = 13 if variable == "origin" else 2 if variable == "type" else 1 if variable == "isolation" else False
         norm_target = True if variable in ["z", "pt"] else False
         z_target = True if variable == "z" else False
         log_target = False
-        use_mask = False# = "./models_library/model_pair_origin.pth" if variable == "z" else False
+        use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
 
         variable_name = "pair_" + variable if variable in ["z", "origin"] else variable
-
-        model, train_losses, val_losses, means, stds, norm_target = model_training.compressed_training_function(
-            h5_files = h5_files_egam,
-            mix_files = h5_files_data,
-            mixture_ratio = 0.66,
-            dataset_class = dataset_class,
-            nn_model = nn_model,
-            model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
-            loss_function = loss_class,
-            optimizer_class = torch.optim.Adam,
-            batch_size = 4096,
-            num_workers = 7,
-            exclude_features = ["truth"],
-            exclude_fields = valid_fields,
-            y_source = "truth",
-            y_field = field[0],
-            fallback_source = "egammas",
-            fallback_field = field[1],
-            valid_fields = valid_fields,
-            log_target = log_target,
-            binary_target = binary_target,
-            z_target = z_target,
-            norm_target = norm_target,
-            pin_memory = False,
-            num_epochs = 5,
-            sample_size = 1_000_000,
-            domain_adversary = True,
-            domain_loss_function = torch.nn.BCEWithLogitsLoss(),
-            domain_loss_weight = 0.05,
-            gradient_reversal_strength = 0.50,
-            mixed_target_loss_weight = 0.20,
-            domain = "bool",
-            periodic_save_interval = 2,
-            periodic_save_path = f"./models_library/model_{variable_name}.pth",
-            use_mask = use_mask
-        )
+        if variable != "origin":
+            model, train_losses, val_losses, means, stds, norm_target = model_training.compressed_training_function(
+                h5_files = h5_files_egam,
+                mix_files = h5_files_data,
+                mixture_ratio = 0.66,
+                dataset_class = dataset_class,
+                nn_model = nn_model,
+                model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
+                loss_function = loss_class,
+                optimizer_class = torch.optim.Adam,
+                batch_size = 4096,
+                num_workers = 7,
+                exclude_features = ["truth"],
+                exclude_fields = valid_fields,
+                y_source = "truth",
+                y_field = field[0],
+                fallback_source = "egammas",
+                fallback_field = field[1],
+                valid_fields = valid_fields,
+                log_target = log_target,
+                binary_target = binary_target,
+                z_target = z_target,
+                norm_target = norm_target,
+                pin_memory = False,
+                num_epochs = 5,
+                sample_size = 1_000_000,
+                domain_adversary = True,
+                domain_loss_function = torch.nn.BCEWithLogitsLoss(),
+                domain_loss_weight = 0.05,
+                gradient_reversal_strength = 0.50,
+                mixed_target_loss_weight = 0.20,
+                domain = "bool",
+                periodic_save_interval = 2,
+                periodic_save_path = f"./models_library/model_{variable_name}.pth",
+                use_mask = use_mask
+            )
+        else:
+            model, train_losses, val_losses, means, stds, norm_target = model_training.compressed_training_function(
+                h5_files = h5_files_egam,
+                dataset_class = dataset_class,
+                nn_model = nn_model,
+                model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
+                loss_function = loss_class,
+                optimizer_class = torch.optim.Adam,
+                batch_size = 4096,
+                num_workers = 7,
+                exclude_features = ["truth"],
+                exclude_fields = valid_fields,
+                y_source = "egammas",
+                y_field = field,
+                valid_fields = valid_fields,
+                log_target = log_target,
+                binary_target = binary_target,
+                z_target = z_target,
+                norm_target = norm_target,
+                pin_memory = False,
+                num_epochs = 5,
+                sample_size = 1_000_000,
+                periodic_save_interval = 2,
+                periodic_save_path = f"./models_library/model_{variable_name}.pth",
+                use_mask = use_mask
+            )            
 
         torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
 
@@ -97,7 +123,7 @@ def _write():
     csv_path = Path("./csv_library")
     csv_path.mkdir(parents=True, exist_ok=True)
 
-    valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"], "truth": ["pt", "eta", "phi"]}
+    valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
     model_configs = {"z" : [False, True, False], "pt" : [False, True, False], "eta" : [False, False, False], "phi" : [False, False, False], "origin" : [False, False, False]}
     data_loading.models_to_csv_files(
         models_path,
