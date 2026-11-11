@@ -59,7 +59,7 @@ def _predict_mask(
             f"got shape {tuple(mask_output.shape)} for batch size "
             f"{eventwise_features.shape[0]}."
         )
-    return mask_output.reshape(-1) > 0
+    return mask_output.reshape(-1) > -2
 
 def _normalize_inputs(inputs : torch.Tensor | tuple, means : torch.Tensor, stds : torch.Tensor) -> torch.Tensor | tuple:
     """
@@ -267,36 +267,19 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
     if norm_target:
         mean_t, std_t = _move_to_device(norm_target, device)
         if variance_target:
-            if outputs.shape[-1] % 2 != 0:
-                raise ValueError(
-                    "variance_target prediction expects an even number of outputs "
-                    "for alternating mean/log-variance outputs."
-                )
-            outputs[..., 0::2] = outputs[..., 0::2] * std_t + mean_t
-            outputs[..., 1::2] = outputs[..., 1::2] + 2 * torch.log(std_t)
+            outputs = outputs + 2 * torch.log(std_t)
         else:
             outputs = outputs * std_t + mean_t
 
     if log_target:
         if variance_target:
-            if outputs.shape[-1] % 2 != 0:
-                raise ValueError(
-                    "variance_target prediction expects an even number of outputs "
-                    "for alternating mean/log-variance outputs."
-                )
-            mean_y = torch.exp(outputs[..., 0::2] + 0.5 * outputs[..., 1::2]) - 1
-            std_y = torch.sqrt(torch.exp(2 * outputs[..., 0::2] + outputs[..., 1::2]) * (torch.exp(outputs[..., 1::2]) - 1))
-            outputs = torch.cat((mean_y[:, 0], std_y[:, 0], mean_y[:, 1], std_y[:, 1]), dim=-1)
+            raise ValueError("Cannot apply log_target transformation when variance_target is True. Log target is generally depreciated. I may fix it in the future.")
+            #outputs = torch.exp(outputs) * (std_t**2)
         else:
             outputs = torch.expm1(outputs)
 
     elif variance_target:
-        if outputs.shape[-1] % 2 != 0:
-            raise ValueError(
-                "variance_target prediction expects an even number of outputs "
-                "for alternating mean/log-variance outputs."
-            )
-        outputs[..., 1::2] = torch.exp(0.5 * outputs[..., 1::2])
+        outputs = torch.exp(0.5 * outputs)
 
     return outputs
 
@@ -680,6 +663,11 @@ def validate_model(
             if mask_model is not None:
                 mask = _predict_mask(mask_model, inputs, event_features)
                 if mask.sum() == 0:
+                    target_mask = _prepare_binary_targets(targets[:, 1], domain_targets, 2, domain = domain)
+                    target_mask = target_mask.to(dtype=torch.bool)
+
+                    print(200*" ", end='\r')  # Clear the line
+                    print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from prediction, {target_mask.sum()} valid samples from truth", end='\r')
                     continue
             else:
                 mask = None
@@ -694,6 +682,9 @@ def validate_model(
                 target_mask = _prepare_binary_targets(targets[:, 1], domain_targets, 2, domain = domain)
                 target_mask = target_mask.to(dtype=torch.bool)
                 if target_mask.sum() == 0:
+
+                    print(200*" ", end='\r')  # Clear the line
+                    print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from truth, {mask.sum()} valid samples from prediction", end='\r')
                     continue
                 targets = targets[:, 0][target_mask]
 

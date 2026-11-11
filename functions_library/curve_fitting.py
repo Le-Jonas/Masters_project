@@ -2,7 +2,9 @@ from iminuit import Minuit
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.signal import fftconvolve
+from scipy.stats import chi2
 import matplotlib.pyplot as plt
+from . import misc_functions as _misc_
 
 def fit_function(
     data : ArrayLike, 
@@ -11,6 +13,7 @@ def fit_function(
     initial_guess : ArrayLike, 
     limits : ArrayLike | None = None,
     save_path : str | None = None,
+    data_truth : tuple[ArrayLike, ArrayLike] | None = None,
 ) -> tuple[ArrayLike, ArrayLike, float]:
     """
     Fit a function to a histogram of data.
@@ -31,9 +34,12 @@ def fit_function(
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     bin_widths = np.diff(bin_edges)
     sample_size = counts.sum()
-    hist = counts / (sample_size * bin_widths)
-    hist_errors = np.sqrt(counts) / (sample_size * bin_widths)
+    norm_const = 1 / (sample_size * bin_widths)
+    hist = counts * norm_const
+    hist_errors = np.sqrt(counts) * norm_const
     fit_mask = counts > 0
+
+
     
     def _chi2(*parameters):
         """
@@ -78,25 +84,51 @@ def fit_function(
     minimizer.migrad(ncall=10000)
 
     if save_path is not None:
-        plt.figure(figsize=(8, 6))
-        plt.errorbar(
+        fig, ax = plt.subplots(figsize=(12, 9))
+        ax.errorbar(
             bin_centers,
-            hist,
-            yerr=hist_errors,
+            hist / norm_const,
+            yerr= hist_errors / norm_const,
             fmt="o",
             color="black",
             label="Data"
         )
-        plt.plot(
+        ax.plot(
             bin_centers,
-            function(bin_centers, *minimizer.values),
+            function(bin_centers, *minimizer.values) / norm_const,
             color="red",
             label="Fit"
         )
-        plt.xlabel("x")
-        plt.ylabel("Normalized Count")
-        plt.legend()
-        plt.savefig(save_path)
+        ax.set_xlabel("Z Mass [GeV]")
+        ax.set_ylabel("Count")
+
+        if data_truth:
+            z_predictions, bkg_predictions, cut_value = data_truth
+            inset = ax.inset_axes([0.08, 0.58, 0.32, 0.32])
+            inset.hist(z_predictions, bins=bin_edges, alpha=0.5, label="Z Predictions", color="blue", histtype="stepfilled", zorder=2)
+            inset.hist(bkg_predictions, bins=bin_edges, alpha=0.5, label="Background Predictions", color="green", histtype="stepfilled", zorder=2)
+            inset.axvline(cut_value, color="red", linestyle="--", label="Cut Value", zorder=3)
+            inset.legend()
+            inset.set_xlabel("Z-PID")
+            inset.set_ylabel("Count")
+
+        P_chi2 = 1 - chi2.cdf(minimizer.fval, df=np.sum(fit_mask) - len(initial_guess))
+
+        info = (
+            f"N_sig = {int(minimizer.values[0] * len(data)):d} ± {int(minimizer.errors[0] * len(data)):d}\n"
+            f"N_bkg = {int((1 - minimizer.values[0]) * len(data)):d} ± {int((1 - minimizer.values[0]) * len(data) * minimizer.errors[0]):d}\n"
+            f"Mean (BW) = {minimizer.values[1]:.2f} ± {minimizer.errors[1]:.4f}\n"
+            f"Width (BW) = {minimizer.values[2]:.2f} ± {minimizer.errors[2]:.4f}\n"
+            f"Sigma (CB) = {minimizer.values[3]:.2f} ± {minimizer.errors[3]:.4f}\n"
+            f"Alpha (CB) = {minimizer.values[4]:.2f} ± {minimizer.errors[4]:.4f}\n"
+            f"n (CB) = {minimizer.values[5]:.2f} ± {minimizer.errors[5]:.4f}\n"
+            f"Decay Constant = {minimizer.values[6]:.2f} ± {minimizer.errors[6]:.4f}\n"
+            f"P(χ^2 = {minimizer.fval:.2f}, N_df = {np.sum(fit_mask) - len(initial_guess)}) = {P_chi2:.4f}"
+        )
+
+        ax.text(0.95, 0.95, info, transform=ax.transAxes, fontsize=10, va='top', ha='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='black'))
+    
+        _misc_.save_plot(save_path, fig)
         plt.close()
 
     if minimizer.fmin.is_above_max_edm or minimizer.fmin.has_reached_call_limit:
@@ -142,7 +174,8 @@ def fit_data_to_mc(
     counts_data, bin_edges = np.histogram(data, bins=bins)
     bin_widths = np.diff(bin_edges)
     sample_size_data = counts_data.sum()
-    hist_data = counts_data / (sample_size_data * bin_widths)
+    norm_const = 1 / (sample_size_data * bin_widths)
+    hist_data = counts_data * norm_const
         
     sample_size_sig = counts_sig.sum()
     sample_size_bkg = counts_bkg.sum()
@@ -177,8 +210,8 @@ def fit_data_to_mc(
     minimizer.limits = [(0.0, 1.0)]
     minimizer.migrad(ncall=10000)
     if save_path is not None:
-        plt.figure(figsize=(8, 6))
-        plt.errorbar(
+        fig, ax = plt.subplots(figsize=(12, 9))
+        ax.errorbar(
             bin_edges[:-1] + bin_widths / 2,
             hist_data,
             yerr=data_err,
@@ -186,16 +219,16 @@ def fit_data_to_mc(
             color="black",
             label="Data"
         )
-        plt.plot(
+        ax.plot(
             bin_edges[:-1] + bin_widths / 2,
             minimizer.values[0] * hist_sig + (1.0 - minimizer.values[0]) * hist_bkg,
             color="red",
             label="Fit"
         )
-        plt.xlabel("Z Mass [GeV (or MeV)]")
-        plt.ylabel("Normalized Count")
-        plt.legend()
-        plt.savefig(save_path)
+        ax.set_xlabel("Z Mass [GeV (or MeV)]")
+        ax.set_ylabel("Normalized Count")
+
+        _misc_.save_plot(save_path, fig)
         plt.close()
 
     if minimizer.fmin.is_above_max_edm or minimizer.fmin.has_reached_call_limit:

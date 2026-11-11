@@ -150,6 +150,120 @@ class GaussianNLLLoss(_GaussianNLLBase):
         return self._reduce(losses)
 
 
+class GaussianVarianceNLLLoss(_GaussianNLLBase):
+    def __init__(
+        self,
+        reduction: str = "mean",
+        min_log_variance: float = -10.0,
+        max_log_variance: float = 7.0,
+    ):
+        super().__init__(reduction, min_log_variance, max_log_variance)
+
+    def forward(
+        self,
+        outputs: torch.Tensor,
+        targets: torch.Tensor,
+        value_outputs: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Computes Gaussian negative log-likelihood for a fixed value prediction.
+
+        ``outputs`` contains only the variance model's raw log-variance
+        predictions. ``value_outputs`` contains predictions from the already
+        trained value model and is detached before calculating the residual,
+        so this loss can only update the variance model.
+        """
+        if outputs.ndim == 0:
+            raise ValueError(
+                "GaussianVarianceNLLLoss expects a non-scalar output tensor."
+            )
+
+        try:
+            targets = targets.reshape_as(outputs)
+        except RuntimeError as error:
+            raise ValueError(
+                "GaussianVarianceNLLLoss received targets with shape "
+                f"{tuple(targets.shape)} that is incompatible with outputs "
+                f"of shape {tuple(outputs.shape)}."
+            ) from error
+
+        try:
+            value_outputs = value_outputs.reshape_as(outputs)
+        except RuntimeError as error:
+            raise ValueError(
+                "GaussianVarianceNLLLoss received value outputs with shape "
+                f"{tuple(value_outputs.shape)} that is incompatible with "
+                f"variance outputs of shape {tuple(outputs.shape)}."
+            ) from error
+
+        log_variance = self._bounded_log_variance(outputs)
+        squared_error = (targets - value_outputs.detach()).square()
+        losses = 0.5 * (
+            torch.exp(-log_variance) * squared_error
+            + log_variance
+        )
+        return self._reduce(losses)
+
+
+class AngularGaussianVarianceNLLLoss(_GaussianNLLBase):
+    def __init__(
+        self,
+        reduction: str = "mean",
+        min_log_variance: float = -10.0,
+        max_log_variance: float = 10.0,
+    ):
+        super().__init__(reduction, min_log_variance, max_log_variance)
+
+    def forward(
+        self,
+        outputs: torch.Tensor,
+        targets: torch.Tensor,
+        value_outputs: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Computes angular Gaussian NLL for a fixed value prediction.
+
+        ``outputs`` contains only the variance model's raw log-variance
+        predictions. ``value_outputs`` contains predictions from the already
+        trained value model and is detached before calculating the wrapped
+        angular residual, so this loss can only update the variance model.
+        """
+        if outputs.ndim == 0:
+            raise ValueError(
+                "AngularGaussianVarianceNLLLoss expects a non-scalar output "
+                "tensor."
+            )
+
+        try:
+            targets = targets.reshape_as(outputs)
+        except RuntimeError as error:
+            raise ValueError(
+                "AngularGaussianVarianceNLLLoss received targets with shape "
+                f"{tuple(targets.shape)} that is incompatible with outputs "
+                f"of shape {tuple(outputs.shape)}."
+            ) from error
+
+        try:
+            value_outputs = value_outputs.reshape_as(outputs)
+        except RuntimeError as error:
+            raise ValueError(
+                "AngularGaussianVarianceNLLLoss received value outputs with "
+                f"shape {tuple(value_outputs.shape)} that is incompatible "
+                f"with variance outputs of shape {tuple(outputs.shape)}."
+            ) from error
+
+        residual = torch.atan2(
+            torch.sin(value_outputs.detach() - targets),
+            torch.cos(value_outputs.detach() - targets),
+        )
+        log_variance = self._bounded_log_variance(outputs)
+        losses = 0.5 * (
+            torch.exp(-log_variance) * residual.square()
+            + log_variance
+        )
+        return self._reduce(losses)
+
+
 class AngularGaussianNLLLoss(_GaussianNLLBase):
     def __init__(
         self,

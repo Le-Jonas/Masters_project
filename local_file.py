@@ -25,8 +25,10 @@ def _train():
         dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin"] else dataset_classes.H5EgammaDataset
         nn_model = neural_models.ParticlePairNetwork if variable in ["z", "origin"] else neural_models.ParticleOriginNetwork
         loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else torch.nn.MSELoss()
+        if variable in ["pt", "eta", "phi"]:
+            variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.GaussianVarianceNLLLoss()
 
-        field = ["truthOrigin"] if variable == "origin" else ["truthType", "passid_Medium"] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthOrigin"], [variable, "passid_Tight"]]
+        field = ["truthOrigin"] if variable == "origin" else ["truthType", "passid_Loose"] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthType"], [variable, "passid_Tight"]]
         output_size = 1 #if variable in ["origin", "pt", "z"] else 2
 
         binary_target = 13 if variable == "origin" else 2 if variable == "type" else 1 if variable == "isolation" else False

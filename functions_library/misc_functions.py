@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader, Dataset
 from pathlib import Path
 from numpy.typing import ArrayLike
 import matplotlib.pyplot as plt
+from datetime import date
 
 from .model_training import predict
 from .dataset_classes import H5EgammaDataset, ZPairDataset, H5EgammaDatasetWrapper
@@ -340,7 +341,8 @@ def _get_totals_from_distribution(
     sample_size : int = 100_000,
     use_fit_template : bool = False,
     save_namespace : str | None = None,
-    predictions_path : str | Path | None = None
+    predictions_path : str | Path | None = None,
+    data_truth : ArrayLike | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
@@ -391,7 +393,17 @@ def _get_totals_from_distribution(
         def fit_pdf(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
             return true_data_fit(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
 
+    initial_guess = [0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5]
+    saved_fit_vals = []
+    saved_fit_errors = []
+    saved_chi2 = []
 
+    if data_truth:
+        z_predictions = predictions[data_truth]
+        bkg_predictions = predictions[not data_truth]
+        comb_predictions = (z_predictions, bkg_predictions)
+    else:
+        comb_predictions = None
 
     for i in range(n_total):
         predicted_labels = (predictions > prediction_values[i]).astype(bool)
@@ -409,21 +421,57 @@ def _get_totals_from_distribution(
 
         if save_namespace is not None:
             plot_name = f"fit_{save_namespace}_threshold_{i}.png"
-            plot_path = "../plots/fits/" + plot_name
+            plot_path = f"../plots/fits/{date.today()}/{plot_name}"
         else:
             plot_path = None
 
         if use_fit_template:
             fit_vals = fit_data_to_mc(z_masses, mc_signal_hist, mc_background_hist, bins, premade_hists=True, save_path=plot_path)
             signal_strength = fit_vals[0]
+            saved_fit_vals.append(fit_vals[0])
+            saved_fit_errors.append(fit_vals[1])
+            saved_chi2.append(fit_vals[2])
+
         else:
-            fit_vals = fit_function(z_masses, bins, fit_pdf, initial_guess=[0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path)
-            signal_strength = fit_vals[0][0]
+            fit_vals = fit_function(z_masses, bins, fit_pdf, initial_guess=initial_guess, limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path, data_truth = (*comb_predictions, prediction_values[i]))
+            initial_guess = fit_vals[0]  # Use the fitted values as the initial guess for the next iteration
+            signal_strength = initial_guess[0]
+
+            saved_fit_vals.append(fit_vals[0])
+            saved_fit_errors.append(fit_vals[1])
+            saved_chi2.append(fit_vals[2])
+
+        
         keep_indices[i] = fit_vals[-1] > 0.5
 
         N_tp[i] = signal_strength * data_fit_size
         N_fp[i] = data_fit_size - signal_strength * data_fit_size
-    
+
+        if i == 10:
+            N_tp_err = fit_vals[1][0] * data_fit_size
+
+
+    saved_fit_vals = np.array(saved_fit_vals).T
+    saved_fit_errors = np.array(saved_fit_errors).T
+    saved_chi2 = np.array(saved_chi2)
+
+    parameter_names = ["Amplitude (Signal)", "Mean (BW)", "Width (BW)", "Sigma (CB)", "Alpha (CB)", "n (CB)", "Decay Constant"]
+    fig, axes = plt.subplots(saved_fit_vals.shape[0] + 1, 1, figsize=(10, 40))
+    axes[0].set_title("Fitted Parameters")
+    for j in range(0, saved_fit_vals.shape[0]):
+        axes[j].errorbar(range(len(saved_fit_vals[j])), saved_fit_vals[j], yerr=saved_fit_errors[j], label=parameter_names[j], fmt='o', capsize=5)
+        axes[j].set_ylabel(f"Parameter {j}")
+        axes[j].grid(linestyle='--', alpha=0.5)
+    axes[-1].plot(saved_chi2, label="Chi-squared")
+    axes[-1].set_ylabel("Chi-squared")
+    axes[-1].grid(linestyle='--', alpha=0.5)
+    axes[-1].set_xlabel("Threshold Index")
+    plt.tight_layout()
+    plot_name = f"fit_parameters.png"
+    plot_path = f"../plots/fits/{date.today()}/{plot_name}"
+    save_plot(plot_path, fig)
+    plt.close()
+
     N_tp = N_tp[keep_indices]
     N_fp = N_fp[keep_indices]
 
@@ -468,18 +516,32 @@ def _get_cut_totals_from_distribution(
     target_only_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
     target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 2
     
-    dataset = ZPairDataset(mc_files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = "passid_Medium", valid_fields = valid_fields)
+    dataset = ZPairDataset(mc_files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = ["pt", "eta", "phi"], valid_fields = valid_fields)
     loader = DataLoader(_TargetOnlyDataset(dataset), **target_only_dataloader_kwargs)
     mc_predictions = []
     for target in loader:
-        mc_predictions.append(target[:, 0, 0] * target[:, 1, 0])
+        pt1 = target[:, 0, 0]
+        eta1 = target[:, 0, 1]
+        phi1 = target[:, 0, 2]
+        pt2 = target[:, 1, 0]
+        eta2 = target[:, 1, 1]
+        phi2 = target[:, 1, 2]
+        z_masses = _compute_z_mass(pt1, eta1, phi1, pt2, eta2, phi2)
+        mc_predictions.append((abs(z_masses/1000) - 91.2) < 10.0)  # Cut on Z mass window
     mc_predictions = np.concatenate(mc_predictions)
 
-    dataset = ZPairDataset(data_files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = "passid_Medium", valid_fields = valid_fields)
+    dataset = ZPairDataset(data_files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = ["pt", "eta", "phi"], valid_fields = valid_fields)
     loader = DataLoader(_TargetOnlyDataset(dataset), **target_only_dataloader_kwargs)
     data_predictions = []
     for target in loader:
-        data_predictions.append(target[:, 0, 0] * target[:, 1, 0])
+        pt1 = target[:, 0, 0]
+        eta1 = target[:, 0, 1]
+        phi1 = target[:, 0, 2]
+        pt2 = target[:, 1, 0]
+        eta2 = target[:, 1, 1]
+        phi2 = target[:, 1, 2]
+        z_masses = _compute_z_mass(pt1, eta1, phi1, pt2, eta2, phi2)
+        data_predictions.append((abs(z_masses/1000) - 91.2) < 10.0)  # Cut on Z mass window
     data_predictions = np.concatenate(data_predictions)
     dataset.close()
 
@@ -503,7 +565,7 @@ def _get_cut_totals_from_distribution(
         fit_vals = fit_data_to_mc(z_masses_mc, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
         signal_strength = fit_vals[0]
     else:
-        fit_vals = fit_function(z_masses_mc, bins, fit_pdf, initial_guess=[0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)])
+        fit_vals = fit_function(z_masses_mc, bins, fit_pdf, initial_guess=[0.9, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)])
         signal_strength = fit_vals[0][0]
 
     N_tp_mc = signal_strength * mc_fit_size
@@ -522,7 +584,7 @@ def _get_cut_totals_from_distribution(
         fit_vals = fit_data_to_mc(z_masses_data, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
         signal_strength = fit_vals[0]
     else:
-        fit_vals = fit_function(z_masses_data, bins, fit_pdf, initial_guess=[0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)])
+        fit_vals = fit_function(z_masses_data, bins, fit_pdf, initial_guess=[0.9, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)])
         signal_strength = fit_vals[0][0]
 
     N_tp_data = signal_strength * data_fit_size
@@ -1302,7 +1364,18 @@ def create_pseudo_roc_curve(
     print(f"Pseudo ROC curve creation complete. Returning results.")
     return (N_tp_mc, N_fp_mc), (N_tp_cut, N_fp_cut), (N_tp_fit_mc, N_fp_fit_mc), (N_tp_cut_mc, N_fp_cut_mc), (N_tp_fit_data, N_fp_fit_data), (N_tp_cut_data, N_fp_cut_data)
 
+def save_plot(path : str | Path, fig : plt.Figure, dpi : int = 300) -> None:
+    """
+    Save a matplotlib figure to a specified path with a given DPI.
+    The function ensures that the parent directory exists before saving the figure.
 
+    Arguments:
+        path (str | Path): The path to save the figure to.
+        fig (plt.Figure): The matplotlib figure to save.
 
-
-    
+    Keywords:        
+        dpi (int, optional): The DPI of the saved figure. Defaults to 300.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=dpi, bbox_inches='tight')
