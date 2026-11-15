@@ -104,10 +104,12 @@ def fit_function(
 
         if data_truth:
             z_predictions, bkg_predictions, cut_value = data_truth
+            truth_bins = np.arange(-10.05, 10.05, 0.1)
             inset = ax.inset_axes([0.08, 0.58, 0.32, 0.32])
-            inset.hist(z_predictions, bins=bin_edges, alpha=0.5, label="Z Predictions", color="blue", histtype="stepfilled", zorder=2)
-            inset.hist(bkg_predictions, bins=bin_edges, alpha=0.5, label="Background Predictions", color="green", histtype="stepfilled", zorder=2)
+            inset.hist(z_predictions, bins=truth_bins, alpha=0.5, label="Z Predictions", color="blue", histtype="stepfilled", zorder=2)
+            inset.hist(bkg_predictions, bins=truth_bins, alpha=0.5, label="Background Predictions", color="green", histtype="stepfilled", zorder=2)
             inset.axvline(cut_value, color="red", linestyle="--", label="Cut Value", zorder=3)
+            inset.set_yscale("log")
             inset.legend()
             inset.set_xlabel("Z-PID")
             inset.set_ylabel("Count")

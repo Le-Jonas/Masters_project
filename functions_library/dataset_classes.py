@@ -542,9 +542,6 @@ class H5EgammaDataset(Dataset):
         - list: A list of field names that should be included in the dataset.
         """
         excluded = set(self.exclude_fields.get(feature_name, set()))
-        if feature_name == self.y_source:
-            excluded.update(self.y_fields)
-            excluded.update(self.fallback_field)
 
         if self.include_fields is not None:
             included = self.include_fields.get(feature_name)

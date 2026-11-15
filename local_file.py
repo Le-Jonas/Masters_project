@@ -19,7 +19,7 @@ def _train():
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    variables = ["pt"]
+    variables = ["origin"]
 
     for variable in variables:
         dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin"] else dataset_classes.H5EgammaDataset
@@ -32,14 +32,14 @@ def _train():
         output_size = 1 #if variable in ["origin", "pt", "z"] else 2
 
         binary_target = 13 if variable == "origin" else 2 if variable == "type" else 1 if variable == "isolation" else False
-        norm_target = True if variable in ["z", "pt"] else False
+        norm_target = True if variable in ["z", "pt", "origin"] else False
         z_target = True if variable == "z" else False
         log_target = False
-        use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
+        use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi", "origin"] else False
 
         variable_name = "pair_" + variable if variable in ["z", "origin"] else variable
         if variable != "origin":
-            model, train_losses, val_losses, means, stds, norm_target = model_training.compressed_training_function(
+            model, train_losses, val_losses, _, _, _ = model_training.compressed_training_function(
                 h5_files = h5_files_egam,
                 mix_files = h5_files_data,
                 mixture_ratio = 0.66,
@@ -70,13 +70,65 @@ def _train():
                 gradient_reversal_strength = 0.50,
                 mixed_target_loss_weight = 0.20,
                 domain = "bool",
-                periodic_save_interval = 2,
+                periodic_save_interval = 4,
                 periodic_save_path = f"./models_library/model_{variable_name}.pth",
                 use_mask = use_mask
             )
+            torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
+
+            if variable in ["pt", "eta", "phi"]:
+                model_var, train_losses_var, val_losses_var, _, _, _ = model_training.compressed_training_function(
+                    h5_files = h5_files_egam,
+                    mix_files = h5_files_data,
+                    mixture_ratio = 0.66,
+                    dataset_class = dataset_class,
+                    nn_model = nn_model,
+                    model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
+                    loss_function = variance_loss_class,
+                    optimizer_class = torch.optim.Adam,
+                    batch_size = 4096,
+                    num_workers = 7,
+                    exclude_features = ["truth"],
+                    exclude_fields = valid_fields,
+                    y_source = "truth",
+                    y_field = field[0],
+                    fallback_source = "egammas",
+                    fallback_field = field[1],
+                    valid_fields = valid_fields,
+                    log_target = log_target,
+                    binary_target = binary_target,
+                    z_target = z_target,
+                    norm_target = norm_target,
+                    pin_memory = False,
+                    num_epochs = 5,
+                    sample_size = 1_000_000,
+                    domain_adversary = True,
+                    domain_loss_function = torch.nn.BCEWithLogitsLoss(),
+                    domain_loss_weight = 0.05,
+                    gradient_reversal_strength = 0.50,
+                    mixed_target_loss_weight = 0.20,
+                    domain = "bool",
+                    periodic_save_interval = 2,
+                    periodic_save_path = f"./models_library/model_{variable_name}_logvar.pth",
+                    use_mask = use_mask,
+                    variance_target = model
+                )
+                torch.save(model_var.state_dict(), f"./models_library/model_{variable_name}_logvar.pth")
+
+                fig = plt.figure(figsize=(10, 6))
+                plt.plot(np.arange(len(train_losses_var)), train_losses_var, label="Training Loss")
+                plt.plot(np.arange(len(val_losses_var)), val_losses_var, label="Validation Loss")
+                plt.xlabel("Epoch")
+                plt.ylabel("Loss")
+                plt.title(f"Training and Validation Loss for {variable_name}")
+                plt.legend()
+                misc_functions.save_plot(f"./plots/{date.today()}/loss_plot_{variable_name}_logvar.png", fig)
+                plt.close()
         else:
-            model, train_losses, val_losses, means, stds, norm_target = model_training.compressed_training_function(
+            model, train_losses, val_losses, _, _, _ = model_training.compressed_training_function(
                 h5_files = h5_files_egam,
+                mix_files = h5_files_data,
+                mixture_ratio = 0.66,
                 dataset_class = dataset_class,
                 nn_model = nn_model,
                 model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
@@ -87,33 +139,39 @@ def _train():
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
                 y_source = "egammas",
-                y_field = field,
+                y_field = ["truthOrigin", "pt", "eta", "phi", "z0", "d0", "sig_z0", "truthType"],
+                fallback_field = ["passid_Loose", "pt", "eta", "phi", "z0", "d0", "sig_z0", "passid_Tight"],
                 valid_fields = valid_fields,
                 log_target = log_target,
                 binary_target = binary_target,
                 z_target = z_target,
                 norm_target = norm_target,
                 pin_memory = False,
-                num_epochs = 5,
+                num_epochs = 10,
                 sample_size = 1_000_000,
+                domain_adversary = True,
+                domain_loss_function = torch.nn.BCEWithLogitsLoss(),
+                domain_loss_weight = 0.05,
+                gradient_reversal_strength = 0.50,
+                mixed_target_loss_weight = 0.10,
                 periodic_save_interval = 2,
                 periodic_save_path = f"./models_library/model_{variable_name}.pth",
-                use_mask = use_mask
+                z_pid = (True, f"./models_library/model_type.pth", f"./models_library/model_isolation.pth")
             )            
 
-        torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
+            torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
 
-        plt.figure(figsize=(10, 6))
+        fig = plt.figure(figsize=(10, 6))
         plt.plot(np.arange(len(train_losses)), train_losses, label="Training Loss")
         plt.plot(np.arange(len(val_losses)), val_losses, label="Validation Loss")
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
         plt.title(f"Training and Validation Loss for {variable_name}")
         plt.legend()
-        plt.savefig(f"./plots/loss_plot_{variable_name}.png")
+        misc_functions.save_plot(f"./plots/{date.today()}/loss_plot_{variable_name}.png", fig)
         plt.close()
 
-def _write():
+def _write(a, b, c):
     base_string = "C:/Users/jonas/Coding/Master/Main/h5/"
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
@@ -126,52 +184,75 @@ def _write():
     csv_path.mkdir(parents=True, exist_ok=True)
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    model_configs = {"z" : [False, True, False], "pt" : [False, True, False], "eta" : [False, False, False], "phi" : [False, False, False], "origin" : [False, False, False]}
-    data_loading.models_to_csv_files(
-        models_path,
-        csv_path,
-        h5_files_egam[train_size_egam:],
-        h5_files_data[train_size_data:],
-        valid_fields = valid_fields,
-        batch_size = 4096,
-        num_workers = 7,
-        pin_memory = False,
-        max_rows = 1_000_000,
-        model_type = "egamma",
-        model_configs = model_configs,
-    )
-    #data_loading.models_to_csv_files(
-    #    models_path,
-    #    csv_path,
-    #    h5_files_egam[train_size_egam:],
-    #    h5_files_data[train_size_data:],
-    #    valid_fields = valid_fields,
-    #    batch_size = 4096,
-    #    num_workers = 7,
-    #    pin_memory = False,
-    #    max_rows = 1_000_000,
-    #    model_type = "pair",
-    #    model_configs = model_configs,
-    #)
-    #data_loading.datasets_to_csv_files(
-    #    h5_files_egam[train_size_egam:],
-    #    h5_files_data[train_size_data:],
-    #    csv_path,
-    #    valid_fields = valid_fields,
-    #    batch_size = 4096,
-    #    num_workers = 7,
-    #    pin_memory = False,
-    #    max_rows = 1_000_000,
-    #    )
+    model_configs = {"z" : [False, True, False], "pt" : [False, True, False], "eta" : [False, False, False], "phi" : [False, False, False], "origin" : [False, False, False], "type" : [False, False, False], "isolation" : [False, False, False]}
+    if a:
+        data_loading.models_to_csv_files(
+            models_path,
+            csv_path,
+            h5_files_egam[train_size_egam:],
+            h5_files_data[train_size_data:],
+            valid_fields = valid_fields,
+            batch_size = 4096,
+            num_workers = 7,
+            pin_memory = False,
+            max_rows = 1_000_000,
+            model_type = "egamma",
+            model_configs = model_configs,
+        )
+    if b:
+        data_loading.models_to_csv_files(
+            models_path,
+            csv_path,
+            h5_files_egam[train_size_egam:],
+            h5_files_data[train_size_data:],
+            valid_fields = valid_fields,
+            batch_size = 4096,
+            num_workers = 7,
+            pin_memory = False,
+            max_rows = 1_000_000,
+            model_type = "pair",
+            model_configs = model_configs,
+        )
+    if c:
+        data_loading.datasets_to_csv_files(
+            h5_files_egam[train_size_egam:],
+            h5_files_data[train_size_data:],
+            csv_path,
+            valid_fields = valid_fields,
+            batch_size = 4096,
+            num_workers = 7,
+            pin_memory = False,
+            max_rows = 1_000_000,
+            )
+
+def _plot():
+    base_string = "C:/Users/jonas/Coding/Master/Main/Masters_project"
+    csv_string = f"{base_string}/csv_library"
+    atlas_mass_paths = [f"{csv_string}/z_pair_atlas_mc.csv", f"{csv_string}/z_pair_atlas_data.csv"]
+    atlas_origin_paths = [f"{csv_string}/origin_pair_atlas_mc.csv", f"{csv_string}/origin_pair_atlas_data.csv"]
+    predictions_paths = [f"{csv_string}/origin_pair_predictions_mc.csv", f"{csv_string}/origin_pair_predictions_data.csv"]
+    origin_truth_path = f"{csv_string}/origin_pair_truth_mc.csv"
+    z_mass_truth_path = f"{csv_string}/z_pair_truth_mc.csv"
+    save_namespace = ["mc", "data"]
+    plotting_path = f"{base_string}/plots/{date.today()}/"
+
+    N_pred_true, N_cut_true, N_pred_fit_mc, N_cut_fit_mc, N_pred_fit_data, N_cut_fit_data = misc_functions.create_pseudo_roc_curve(
+        predictions_paths, atlas_mass_paths, atlas_origin_paths, origin_truth_path, z_mass_truth_path, plotting_path, 
+        save_namespace=save_namespace, bins = np.arange(54.75, 125.25, 0.5), n_total = 100)
+    
+    print(f"N_tp and N_fp for the cut threshold: {N_cut_true}, {N_cut_fit_mc}, {N_cut_fit_data}")
+    print(f"N_tp and N_fp for the pseudo-roc curve: {N_pred_true}, {N_pred_fit_mc}, {N_pred_fit_data}")
 
 
 if __name__ == "__main__":
     import torch
     import matplotlib.pyplot as plt
     import numpy as np
-    from functions_library import dataset_classes, neural_models, training_classes, model_training, data_loading
+    from functions_library import dataset_classes, neural_models, training_classes, model_training, data_loading, misc_functions
     from pathlib import Path
+    from datetime import date
 
     #_train()
-    _write()
+    _write(0, 0, 1)
+    _plot()
     print("Training and writing completed successfully.")

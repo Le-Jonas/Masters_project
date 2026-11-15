@@ -189,7 +189,7 @@ def _selected_rows_for_files(h5_files : list[Path], mix_files : str | Path | lis
     dataset.close()
     return files, valid_rows
 
-def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : torch.device, dataloader_kwargs : dict, valid_fields : dict, n_total : int = 200, sample_size : int = 100_000, z_masses : ArrayLike | None = None, bins : int | list[float] | None = None, predictions_path : str | Path | None = None) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
+def _get_truth_totals(predictions : ArrayLike, truth : ArrayLike, origin_atlas : ArrayLike, z_masses_truth : ArrayLike | None = None, n_total : int = 200, bins : int | list[float] = np.arange(55.05, 135.05, 0.1),) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
     """
     Given a model, a full data loader, and a target data loader, compute the total number of true positives and true negatives for different prediction thresholds and the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
 
@@ -211,60 +211,18 @@ def _get_truth_totals(mc_files : list[Path], model : torch.nn.Module, device : t
     - N_tp_cut: The number of true positives for the cut threshold.
     - N_fp_cut: The number of false positives for the cut threshold.
     """
-    mc_dataset = ZPairDataset(mc_files, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = ["truthOrigin", "passid_Medium"], valid_fields = valid_fields)
-
-    if predictions_path:
-        predictions_path = Path(predictions_path)
-        if predictions_path.is_file():
-            predictions = np.loadtxt(predictions_path, delimiter=",")
-        else:
-            raise FileNotFoundError(f"Predictions file does not exist: {predictions_path}")
-    else:
-        mc_dataset_mean = H5EgammaDataset(mc_files, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_field = None)
-        means, stds = compute_mean_std(mc_dataset_mean, sample_size=sample_size, batch_size=dataloader_kwargs["batch_size"], num_workers=dataloader_kwargs["num_workers"], pin_memory=dataloader_kwargs["pin_memory"], persistent_workers=dataloader_kwargs["persistent_workers"])
-        mc_dataset_mean.close()
-
-        full_loader = DataLoader(mc_dataset, **dataloader_kwargs)
-        predictions = predict(model, full_loader, device=device, means=means, stds=stds)
-
-
-    target_only_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
-    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 2
-    target_loader = DataLoader(_TargetOnlyDataset(mc_dataset), **target_only_dataloader_kwargs)
-
-    truth = []
-    pseudo_truth = []
-    expected_batches = len(target_loader)
-    for batch, targets in enumerate(target_loader):
-        truth.append(targets[:, :, 0])
-        pseudo_truth.append(targets[:, :, 1])
-        print(200*" ", end='\r')  # Clear the line
-        print(f"Getting truthOrigin with batch {batch + 1}/{expected_batches}", end='\r')
-    print(200*" ", end='\r')  # Clear the line
-
-    truth = np.concatenate(truth, axis=0) == 13
-    truth = truth[:, 0] * truth[:, 1]
-
-    pseudo_truth = np.concatenate(pseudo_truth, axis=0)
-    pseudo_truth = pseudo_truth[:, 0] * pseudo_truth[:, 1]
-
-    mc_dataset.close()
-
-    if z_masses is not None:
-        if bins is None or isinstance(bins, int):
-            raise ValueError("Explicit bin edges are required when restricting truth totals by mass.")
-        mass_in_range = (z_masses / 1000 > bins[0]) & (z_masses / 1000 < bins[-1])
+    if bins is not None and z_masses_truth is not None:
+        mass_in_range = (z_masses_truth / 1000 > bins[0]) & (z_masses_truth / 1000 < bins[-1])
         truth = truth[mass_in_range]
-        pseudo_truth = pseudo_truth[mass_in_range]
+        origin_atlas = origin_atlas[mass_in_range]
         predictions = predictions[mass_in_range]
 
-    cut_labels = (pseudo_truth > 0.5)
-    N_tp_cut = (truth * cut_labels).sum()
-    N_fp_cut = ((1 - truth) * cut_labels).sum()
+    N_tp_cut = (truth * origin_atlas).sum()
+    N_fp_cut = ((1 - truth) * origin_atlas).sum()
         
     N_tp = np.zeros(n_total)
     N_fp = np.zeros(n_total)
-    prediction_values = np.linspace(-5, 10, n_total)
+    prediction_values = np.linspace(-10, 10, n_total)
     for i in range(n_total):
         predicted_labels = (predictions > prediction_values[i]).astype(bool)
         N_tp[i] = (truth * predicted_labels).sum()
@@ -328,20 +286,14 @@ def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Modu
     return z_masses
 
 def _get_totals_from_distribution(
-    files_path : list[Path],
-    model : torch.nn.Module,
-    device : torch.device,
+    predictions : ArrayLike,
     data_masses : ArrayLike,
-    dataloader_kwargs : dict,
-    valid_fields : dict[str, list[str]],
     mc_signal_hist : ArrayLike | None = None, 
     mc_background_hist : ArrayLike | None = None,
     bins : int | list[float] = np.arange(55.05, 135.05, 0.1),
     n_total : int = 200,
-    sample_size : int = 100_000,
-    use_fit_template : bool = False,
+    plotting_path : str | Path | None = None,
     save_namespace : str | None = None,
-    predictions_path : str | Path | None = None,
     data_truth : ArrayLike | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -368,26 +320,13 @@ def _get_totals_from_distribution(
     - N_tp: An array containing the number of true positives for each threshold.
     - N_fp: An array containing the number of false positives for each threshold.
     """
-    if predictions_path:
-        predictions_path = Path(predictions_path)
-        if predictions_path.is_file():
-            predictions = np.loadtxt(predictions_path, delimiter=",")
-        else:
-            raise FileNotFoundError(f"Predictions file does not exist: {predictions_path}")
-    else:
-        dataset_mean = H5EgammaDataset(files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_field = None)
-        means, stds = compute_mean_std(dataset_mean, sample_size=sample_size, batch_size=dataloader_kwargs["batch_size"], num_workers=dataloader_kwargs["num_workers"], pin_memory=dataloader_kwargs["pin_memory"], persistent_workers=dataloader_kwargs["persistent_workers"])
-        dataset_mean.close()
-
-        dataset = ZPairDataset(files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_field = None, valid_fields = valid_fields)
-        loader = DataLoader(dataset, **dataloader_kwargs)
-        predictions = predict(model, loader, device, means=means, stds=stds)
-        dataset.close()
-
     N_tp = np.zeros(n_total)
     N_fp = np.zeros(n_total)
     keep_indices = np.zeros(n_total, dtype=bool)
-    prediction_values = np.linspace(-5, 10, n_total)
+    prediction_values = np.linspace(-10, 10, n_total)
+
+    if mc_signal_hist is None or mc_background_hist is None:
+        use_fit_template = False
 
     if not use_fit_template:
         def fit_pdf(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
@@ -398,9 +337,10 @@ def _get_totals_from_distribution(
     saved_fit_errors = []
     saved_chi2 = []
 
-    if data_truth:
+    if data_truth is not None:
+        data_truth = np.array(data_truth, dtype=bool)
         z_predictions = predictions[data_truth]
-        bkg_predictions = predictions[not data_truth]
+        bkg_predictions = predictions[~data_truth]
         comb_predictions = (z_predictions, bkg_predictions)
     else:
         comb_predictions = None
@@ -410,18 +350,16 @@ def _get_totals_from_distribution(
         z_masses = data_masses[predicted_labels]
         z_masses = z_masses / 1000
         data_size = len(z_masses)
-        if data_size < 1000:
+        if data_size < 100:
             continue
 
         fit_exclusion_mask = (z_masses > bins[0]) & (z_masses < bins[-1])
         z_masses = z_masses[fit_exclusion_mask]
         data_fit_size = len(z_masses)
         
-        
-
         if save_namespace is not None:
-            plot_name = f"fit_{save_namespace}_threshold_{i}.png"
-            plot_path = f"../plots/fits/{date.today()}/{plot_name}"
+            plot_name = f"fits/{save_namespace}_threshold_{i}.png"
+            plot_path = f"{plotting_path}/{plot_name}"
         else:
             plot_path = None
 
@@ -433,7 +371,8 @@ def _get_totals_from_distribution(
             saved_chi2.append(fit_vals[2])
 
         else:
-            fit_vals = fit_function(z_masses, bins, fit_pdf, initial_guess=initial_guess, limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path, data_truth = (*comb_predictions, prediction_values[i]))
+            data_truth_i = (*comb_predictions, prediction_values[i]) if data_truth is not None else None
+            fit_vals = fit_function(z_masses, bins, fit_pdf, initial_guess=initial_guess, limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path, data_truth=data_truth_i)
             initial_guess = fit_vals[0]  # Use the fitted values as the initial guess for the next iteration
             signal_strength = initial_guess[0]
 
@@ -442,13 +381,10 @@ def _get_totals_from_distribution(
             saved_chi2.append(fit_vals[2])
 
         
-        keep_indices[i] = fit_vals[-1] > 0.5
+        keep_indices[i] = fit_vals[-1] == 1
 
         N_tp[i] = signal_strength * data_fit_size
         N_fp[i] = data_fit_size - signal_strength * data_fit_size
-
-        if i == 10:
-            N_tp_err = fit_vals[1][0] * data_fit_size
 
 
     saved_fit_vals = np.array(saved_fit_vals).T
@@ -467,8 +403,8 @@ def _get_totals_from_distribution(
     axes[-1].grid(linestyle='--', alpha=0.5)
     axes[-1].set_xlabel("Threshold Index")
     plt.tight_layout()
-    plot_name = f"fit_parameters.png"
-    plot_path = f"../plots/fits/{date.today()}/{plot_name}"
+    plot_name = f"{save_namespace}_fit_parameters.png"
+    plot_path = f"{plotting_path}/{plot_name}"
     save_plot(plot_path, fig)
     plt.close()
 
@@ -480,16 +416,14 @@ def _get_totals_from_distribution(
     return N_tp, N_fp
 
 def _get_cut_totals_from_distribution(
-    mc_files_path : list[Path],
-    data_files_path : list[Path],
-    mc_masses : ArrayLike,
+    mc_truth_masses : ArrayLike,
+    mc_origin : ArrayLike,
+    data_origin : ArrayLike,
     data_masses : ArrayLike,
-    dataloader_kwargs : dict,
-    valid_fields : dict[str, list[str]],
     mc_signal_hist : ArrayLike | None = None, 
     mc_background_hist : ArrayLike | None = None,
-    use_fit_template : bool = False,
     bins : int | list[float] = np.arange(55.05, 135.05, 0.1),
+    plotting_path : str | Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
@@ -513,65 +447,38 @@ def _get_cut_totals_from_distribution(
     - N_tp: An array containing the number of true positives for each threshold.
     - N_fp: An array containing the number of false positives for each threshold.
     """
-    target_only_dataloader_kwargs = dataloader_kwargs.copy() #I do not want to change the parent dict.
-    target_only_dataloader_kwargs["batch_size"] = target_only_dataloader_kwargs["batch_size"] * 2
-    
-    dataset = ZPairDataset(mc_files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = ["pt", "eta", "phi"], valid_fields = valid_fields)
-    loader = DataLoader(_TargetOnlyDataset(dataset), **target_only_dataloader_kwargs)
-    mc_predictions = []
-    for target in loader:
-        pt1 = target[:, 0, 0]
-        eta1 = target[:, 0, 1]
-        phi1 = target[:, 0, 2]
-        pt2 = target[:, 1, 0]
-        eta2 = target[:, 1, 1]
-        phi2 = target[:, 1, 2]
-        z_masses = _compute_z_mass(pt1, eta1, phi1, pt2, eta2, phi2)
-        mc_predictions.append((abs(z_masses/1000) - 91.2) < 10.0)  # Cut on Z mass window
-    mc_predictions = np.concatenate(mc_predictions)
-
-    dataset = ZPairDataset(data_files_path, exclude_features=["truth"], exclude_fields = {"egammas": ["truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight"]}, y_source = "egammas", y_field = ["pt", "eta", "phi"], valid_fields = valid_fields)
-    loader = DataLoader(_TargetOnlyDataset(dataset), **target_only_dataloader_kwargs)
-    data_predictions = []
-    for target in loader:
-        pt1 = target[:, 0, 0]
-        eta1 = target[:, 0, 1]
-        phi1 = target[:, 0, 2]
-        pt2 = target[:, 1, 0]
-        eta2 = target[:, 1, 1]
-        phi2 = target[:, 1, 2]
-        z_masses = _compute_z_mass(pt1, eta1, phi1, pt2, eta2, phi2)
-        data_predictions.append((abs(z_masses/1000) - 91.2) < 10.0)  # Cut on Z mass window
-    data_predictions = np.concatenate(data_predictions)
-    dataset.close()
-
-    mc_predictions = mc_predictions.astype(bool)
-    data_predictions = data_predictions.astype(bool)
+    if mc_signal_hist is None or mc_background_hist is None:
+        use_fit_template = False
 
     if not use_fit_template:
         def fit_pdf(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
             return true_data_fit(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
 
 
-    z_masses_mc = mc_masses[mc_predictions]
+    z_masses_mc = mc_truth_masses[mc_origin] #mc_masses[mc_origin]
     z_masses_mc = z_masses_mc / 1000
-    mc_size = len(z_masses_mc)
 
     fit_exclusion_mask = (z_masses_mc > bins[0]) & (z_masses_mc < bins[-1])
     z_masses_mc = z_masses_mc[fit_exclusion_mask]
     mc_fit_size = len(z_masses_mc)
 
+    if plotting_path is not None:
+        plot_name = f"fits/mc_cut_threshold.png"
+        plot_path = f"{plotting_path}/{plot_name}"
+    else:
+        plot_path = None
+
     if use_fit_template:
         fit_vals = fit_data_to_mc(z_masses_mc, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
         signal_strength = fit_vals[0]
     else:
-        fit_vals = fit_function(z_masses_mc, bins, fit_pdf, initial_guess=[0.9, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)])
+        fit_vals = fit_function(z_masses_mc, bins, fit_pdf, initial_guess=[0.9, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path)
         signal_strength = fit_vals[0][0]
 
     N_tp_mc = signal_strength * mc_fit_size
     N_fp_mc = mc_fit_size - signal_strength * mc_fit_size
 
-    z_masses_data = data_masses[data_predictions]
+    z_masses_data = data_masses[data_origin] #Data does not have known masses. Perhaps predicted masses better than atlas masses?
     z_masses_data = z_masses_data / 1000
     data_size = len(z_masses_data)
 
@@ -579,12 +486,17 @@ def _get_cut_totals_from_distribution(
     z_masses_data = z_masses_data[fit_exclusion_mask]
     data_fit_size = len(z_masses_data)
     
+    if plotting_path is not None:
+        plot_name = f"fits/data_cut_threshold.png"
+        plot_path = f"{plotting_path}/{plot_name}"
+    else:
+        plot_path = None
 
     if use_fit_template:
         fit_vals = fit_data_to_mc(z_masses_data, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
         signal_strength = fit_vals[0]
     else:
-        fit_vals = fit_function(z_masses_data, bins, fit_pdf, initial_guess=[0.9, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)])
+        fit_vals = fit_function(z_masses_data, bins, fit_pdf, initial_guess=[0.9, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path)
         signal_strength = fit_vals[0][0]
 
     N_tp_data = signal_strength * data_fit_size
@@ -1209,24 +1121,16 @@ def angular_difference(predicted : torch.Tensor, target : torch.Tensor) -> torch
     )
 
 def create_pseudo_roc_curve(
-    mc_z_masses_path : tuple[str] | tuple[Path],
-    mc_files : list[Path],
-    data_files : list[Path],
-    models : dict[str, torch.nn.Module],
-    device : torch.device,
-    batch_size : int = 4096,
-    num_workers : int = 4,
-    prefetch_factor : int = 2,
-    persistent_workers : bool = True,
-    pin_memory : bool = True,
-    bins : int | list[float] = 1000,
+    origin_predictions_path : tuple[str] | tuple[Path],
+    mass_atlas_path : tuple[str] | tuple[Path],
+    origin_atlas_path : tuple[str] | tuple[Path],
+    mc_origin_truth_path : str | Path,
+    mc_mass_truth_path : str | Path,
+    plotting_path : str | Path,
+    bins : int | list[float] = 100,
     n_total : int = 200,
-    sample_size : int = 100_000,
-    use_mass_predictions : bool | list | np.ndarray = True,
-    use_template_fits : bool = True,
     save_namespace : list[str] | list[None] = [None, None],
-    z_data_predictions_path : str | Path | None = None,
-    z_mc_predictions_path : str | Path | None = None,
+    template_z_masses_path : tuple[str] | tuple[Path] | None = None
 ) -> tuple[np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], int, int]:
     """
     Creates a pseudo ROC curve by computing the number of true positives and true negatives for different prediction thresholds, as well as the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
@@ -1259,109 +1163,93 @@ def create_pseudo_roc_curve(
     - N_tp_cut: The number of true positives for the cut-based approach.
     - N_fp_cut: The number of false positives for the cut-based approach.
     """
-    
-    dataloader_kwargs = {
-        "batch_size": batch_size,
-        "shuffle": False,
-        "num_workers": num_workers,
-        "prefetch_factor": prefetch_factor,
-        "persistent_workers": persistent_workers,
-        "pin_memory": pin_memory,
-    }
-    valid_fields = {"egammas": ["truthOrigin", "passid_Medium", "pt", "eta", "phi", "e"], "truth": ["pt", "eta", "phi", "e"]}
-    if use_mass_predictions == False:
-        valid_fields["egammas"].extend(["pt", "eta", "phi", "e"])
-
-    if (type(use_mass_predictions) == list or type(use_mass_predictions) == np.ndarray):
-        print(f"Loading the Z masses for MC and data files...")
-        mc_z_masses = np.loadtxt(use_mass_predictions[0], delimiter=',')
-        data_z_masses = np.loadtxt(use_mass_predictions[1], delimiter=',')
-
-    elif use_mass_predictions:
-        print(f"Loading the Z masses for MC and data files...")
-        mc_z_masses = _load_z_masses_from_files(mc_files, dataloader_kwargs, valid_fields)
-        data_z_masses = _load_z_masses_from_files(data_files, dataloader_kwargs, valid_fields)
-        
-    else:
-        print(f"Predicting the Z masses for MC and data files...")
-        mc_z_masses = _find_predicted_Z_masses(mc_files, models, device, dataloader_kwargs, valid_fields, sample_size=sample_size)
-        data_z_masses = _find_predicted_Z_masses(data_files, models, device, dataloader_kwargs, valid_fields, sample_size=sample_size)
-
-
     print(f"Creating pseudo ROC curve with {n_total} thresholds.")
+    print(f"Loading the relevant data...")
+    mc_origin_predictions = np.loadtxt(origin_predictions_path[0], delimiter=',', dtype=float)
+    data_origin_predictions = np.loadtxt(origin_predictions_path[1], delimiter=',', dtype=float)
+
+    #mc_z_masses = np.loadtxt(mass_atlas_path[0], delimiter=',') #Depreciated, I will still have it here in case of later use.
+    data_z_masses = np.loadtxt(mass_atlas_path[1], delimiter=',', dtype=float)
+
+    mc_origin_atlas = np.loadtxt(origin_atlas_path[0], delimiter=',', dtype=float) > 0.5
+    data_origin_atlas = np.loadtxt(origin_atlas_path[1], delimiter=',', dtype=float) > 0.5
+
+    mc_origin_truth = np.loadtxt(mc_origin_truth_path, delimiter=',', dtype=float) > 0.5
+    mc_mass_truth = np.loadtxt(mc_mass_truth_path, delimiter=',', dtype=float)
+
+
     print(f"Getting base truth totals for MC files...")
     N_tp_mc, N_fp_mc, N_tp_cut, N_fp_cut = _get_truth_totals(
-        mc_files,
-        models["origin"],
-        device,
-        dataloader_kwargs,
-        valid_fields,
+        mc_origin_predictions,
+        mc_origin_truth,
+        mc_origin_atlas,
+        z_masses_truth = mc_mass_truth,
         n_total=n_total,
-        sample_size=sample_size,
-        z_masses=mc_z_masses,
         bins=bins,
-        predictions_path=z_mc_predictions_path
     )
 
-    if use_template_fits:
+    if template_z_masses_path:
         print(f"Histogramming the predicted Z masses for precomputed MC files...")
-        temp_z_masses = np.loadtxt(mc_z_masses_path[0], max_rows=1_000_000)
+        temp_z_masses = np.loadtxt(template_z_masses_path[0], max_rows=1_000_000)
         sig_z_mass_hist, _ = np.histogram(temp_z_masses / 1000, bins=bins)
-        temp_z_masses = np.loadtxt(mc_z_masses_path[1], max_rows=1_000_000)
+        temp_z_masses = np.loadtxt(template_z_masses_path[1], max_rows=1_000_000)
         bkg_z_mass_hist, _ = np.histogram(temp_z_masses / 1000, bins=bins)
     else:
         sig_z_mass_hist, bkg_z_mass_hist = None, None
 
     print(f"Fitting the MC Z mass distributions...")
     N_tp_fit_mc, N_fp_fit_mc = _get_totals_from_distribution(
-        mc_files,
-        models["origin"],
-        device,
-        mc_z_masses,
-        dataloader_kwargs,
-        valid_fields,
+        mc_origin_predictions,
+        mc_mass_truth,
+        data_truth = mc_origin_truth,
         mc_signal_hist = sig_z_mass_hist,
         mc_background_hist = bkg_z_mass_hist,
-        use_fit_template = use_template_fits,
         bins=bins,
         n_total=n_total,
-        sample_size=sample_size,
+        plotting_path=plotting_path,
         save_namespace=save_namespace[0],
-        predictions_path=z_mc_predictions_path
     )
 
     print(f"Fitting the data Z mass distributions...")
     N_tp_fit_data, N_fp_fit_data = _get_totals_from_distribution(
-        data_files,
-        models["origin"],
-        device,
+        data_origin_predictions,
         data_z_masses,
-        dataloader_kwargs,
-        valid_fields,
         mc_signal_hist = sig_z_mass_hist,
         mc_background_hist = bkg_z_mass_hist,
-        use_fit_template = use_template_fits,
         bins=bins,
         n_total=n_total,
-        sample_size=sample_size,
+        plotting_path=plotting_path,
         save_namespace=save_namespace[1],
-        predictions_path=z_data_predictions_path
     )
 
     N_tp_cut_mc, N_fp_cut_mc, N_tp_cut_data, N_fp_cut_data = _get_cut_totals_from_distribution(
-        mc_files,
-        data_files,
-        mc_z_masses,
+        mc_mass_truth,
+        mc_origin_atlas,
+        data_origin_atlas,
         data_z_masses,
-        dataloader_kwargs,
-        valid_fields,
         mc_signal_hist = sig_z_mass_hist,
         mc_background_hist = bkg_z_mass_hist,
-        use_fit_template = use_template_fits,
         bins=bins,
+        plotting_path=plotting_path,
     )
 
-    print(f"Pseudo ROC curve creation complete. Returning results.")
+    print(f"Pseudo ROC curve creation complete. Plotting results.")
+    pseudo_roc_plot_path = Path(plotting_path) / "pseudo_roc_curve.png"
+    fig = plt.figure(figsize=(8, 6))
+    plt.plot(N_fp_mc/N_fp_cut, N_tp_mc/N_tp_cut, '.', color='blue', label='True pseudo ROC')
+    plt.plot(N_fp_fit_mc/N_fp_cut_mc, N_tp_fit_mc/N_tp_cut_mc, '.', color='orange', label='MC Fitted pseudo ROC')
+    plt.plot(N_fp_fit_data/N_fp_cut_data, N_tp_fit_data/N_tp_cut_data, '.', color='green', label='Data Fitted pseudo ROC')
+    plt.axhline(1, color='black', linestyle='--', label='Cut True Positive Rate')
+    plt.axvline(1, color='black', linestyle='--', label='Cut False Positive Rate')
+    plt.xlabel('False Positive Rate (Normalized to Cut)')
+    plt.ylabel('True Positive Rate (Normalized to Cut)')
+    plt.xlim(0.0, 2.0)
+    plt.ylim(0.0, 2.0)
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.7)
+    save_plot(pseudo_roc_plot_path, fig)
+    plt.close()
+
     return (N_tp_mc, N_fp_mc), (N_tp_cut, N_fp_cut), (N_tp_fit_mc, N_fp_fit_mc), (N_tp_cut_mc, N_fp_cut_mc), (N_tp_fit_data, N_fp_fit_data), (N_tp_cut_data, N_fp_cut_data)
 
 def save_plot(path : str | Path, fig : plt.Figure, dpi : int = 300) -> None:

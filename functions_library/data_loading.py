@@ -647,7 +647,7 @@ def models_to_csv_files(models_path : Path | str,
             exclude_fields = valid_fields,
             valid_fields = valid_fields,
             y_source = "egammas",
-            y_field = None,
+            y_field = ["z0", "d0", "sig_z0"],
         )
         
         data_dataset = _class_.ZPairDataset(
@@ -656,11 +656,12 @@ def models_to_csv_files(models_path : Path | str,
             exclude_fields = valid_fields,
             valid_fields = valid_fields,
             y_source = "egammas",
-            y_field = None,
+            y_field = ["z0", "d0", "sig_z0"],
         )
 
         particle_size = len([field for field in mc_dataset.fields if not field.startswith("eventwise_")]) // 2
         event_size = len([field for field in mc_dataset.fields if field.startswith("eventwise_")])
+        target_size = len([field for field in mc_dataset.y_fields])
 
     else:
         raise ValueError(f"Invalid model_type: {model_type}. Must be 'egamma' or 'pair'.")
@@ -670,7 +671,7 @@ def models_to_csv_files(models_path : Path | str,
         name_parts = name.split("_")
         output_size = 1 #if name_parts[-1] in ["origin", "pt", "z"] else 2
 
-        if name_parts[-1] not in ["pt"]:
+        if name_parts[-1] not in ["logvar", "origin"]:
             continue
 
         if (name_parts[1] == "pair" and model_type == "egamma"):
@@ -696,13 +697,22 @@ def models_to_csv_files(models_path : Path | str,
                 consolidation_hidden_sizes=[32, 32, 32, 8],
                 output_size=output_size,
             )
-        elif model_type == "pair":
+        elif model_type == "pair" and name_parts[-1] != "origin":
             model = _neural_.ParticlePairNetwork(
                 particle_size,
                 event_size,
                 particle_hidden_sizes=[1024, 256, 256, 256, 256, 256, 64, 8],
                 event_hidden_sizes=[64, 64, 16, 4],
                 consolidation_hidden_sizes=[32, 32, 32, 8],
+                output_size=output_size,
+            )
+        else:
+            model = _neural_.ParticlePairNetwork(
+                target_size + 2,
+                event_size,
+                particle_hidden_sizes=[64, 64, 16, 16, 8],
+                event_hidden_sizes=[16, 8],
+                consolidation_hidden_sizes=[16, 8],
                 output_size=output_size,
             )
         model.load_state_dict(torch.load(model_str, map_location=torch.device("cpu")))
@@ -713,6 +723,11 @@ def models_to_csv_files(models_path : Path | str,
             log_target, norm_target, variance_target = config_tuple
         except KeyError:
             log_target, norm_target, variance_target = False, False, False
+
+        if name_parts[-1] == "logvar":
+            variance_target = True
+            csv_mc_file = csv_path / f"{name_parts[-2]}_{name_parts[-1]}_{model_type}_predictions_mc.csv"
+            csv_data_file = csv_path / f"{name_parts[-2]}_{name_parts[-1]}_{model_type}_predictions_data.csv"
 
         if (norm_target and name_parts[-1] != "z"):
             norm_dataset = _class_.H5EgammaDataset(
@@ -743,13 +758,106 @@ def models_to_csv_files(models_path : Path | str,
             )
             norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=500_000, batch_size=batch_size, log_target=log_target, z_target=True, num_workers=num_workers, pin_memory=pin_memory)
 
-        mc_loader = DataLoader(mc_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
-        data_loader = DataLoader(data_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+        if name_parts[-1] != "origin":
+            mc_loader = DataLoader(mc_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+            data_loader = DataLoader(data_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
-        mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
-        data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
-        np.savetxt(csv_mc_file, mc_predictions[:max_rows], delimiter=",")
-        np.savetxt(csv_data_file, data_predictions[:max_rows], delimiter=",")
+            mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
+            data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
+            np.savetxt(csv_mc_file, mc_predictions[:max_rows], delimiter=",")
+            np.savetxt(csv_data_file, data_predictions[:max_rows], delimiter=",")
+
+        else:
+            norm_dataset = _class_.H5EgammaDataset(
+                files=h5_egam_files,
+                mix_files=h5_data_files,
+                mixture_ratio=mixture_ratio,
+                mixture_seed=mix_seed,
+                exclude_features=["truth"],
+                exclude_fields = valid_fields,
+                valid_fields = valid_fields,
+                y_source = "truth",
+                fallback_source = "egammas",
+                y_field = ["z0", "d0", "sig_z0"]
+            )
+            means_t, stds_t = _misc_.compute_target_mean_std(norm_dataset, sample_size=1_000_000, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
+
+            mc_loader = DataLoader(mc_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+            data_loader = DataLoader(data_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+            mc_targets = []
+            data_targets = []
+            eventwise_mc = []
+            eventwise_data = []
+
+            mc_length = len(mc_loader)
+            data_length = len(data_loader)
+            for batch, data in enumerate(mc_loader):
+                _, _, eventwise, target, _ = data
+                mc_targets.append(target.numpy())
+                eventwise_mc.append(eventwise.numpy())
+                print(200*" ", end='\r')  # Clear the line
+                print(f"MC loading batch {batch+1}/{mc_length}", end='\r')
+            for batch, data in enumerate(data_loader):
+                _, _, eventwise, target, _ = data
+                data_targets.append(target.numpy())
+                eventwise_data.append(eventwise.numpy())
+                print(200*" ", end='\r')  # Clear the line
+                print(f"Data loading batch {batch+1}/{data_length}", end='\r')
+            print(200*" ", end='\r')
+
+            mc_targets = (np.concatenate(mc_targets) - means_t.detach().numpy()) / stds_t.detach().numpy()
+            data_targets = (np.concatenate(data_targets) - means_t.detach().numpy()) / stds_t.detach().numpy()
+            eventwise_mc = (np.concatenate(eventwise_mc) - means[1].detach().numpy()) / stds[1].detach().numpy()
+            eventwise_data = (np.concatenate(eventwise_data) - means[1].detach().numpy()) / stds[1].detach().numpy()
+
+            type_paired_predictions_mc = np.loadtxt("./csv_library/type_paired_predictions_mc.csv", delimiter=",") / 8.0
+            isolation_paired_predictions_mc = np.loadtxt("./csv_library/isolation_paired_predictions_mc.csv", delimiter=",") / 8.0
+            type_paired_predictions_data = np.loadtxt("./csv_library/type_paired_predictions_data.csv", delimiter=",") / 8.0
+            isolation_paired_predictions_data = np.loadtxt("./csv_library/isolation_paired_predictions_data.csv", delimiter=",") / 8.0
+
+            if mc_targets.shape[0] != type_paired_predictions_mc.shape[0]:
+                mc_targets = mc_targets[:type_paired_predictions_mc.shape[0]]
+                eventwise_mc = eventwise_mc[:type_paired_predictions_mc.shape[0]]
+            if data_targets.shape[0] != type_paired_predictions_mc.shape[0]:
+                data_targets = data_targets[:type_paired_predictions_mc.shape[0]]
+                eventwise_data = eventwise_data[:type_paired_predictions_mc.shape[0]]
+
+            mc_inputs_1 = np.column_stack((mc_targets[:, 0, :], type_paired_predictions_mc[:, 0], isolation_paired_predictions_mc[:, 0]))
+            mc_inputs_2 = np.column_stack((mc_targets[:, 1, :], type_paired_predictions_mc[:, 1], isolation_paired_predictions_mc[:, 1]))
+            data_inputs_1 = np.column_stack((data_targets[:, 0, :], type_paired_predictions_data[:, 0], isolation_paired_predictions_data[:, 0]))
+            data_inputs_2 = np.column_stack((data_targets[:, 1, :], type_paired_predictions_data[:, 1], isolation_paired_predictions_data[:, 1]))
+            
+            mc_inputs = (torch.from_numpy(mc_inputs_1).float(), torch.from_numpy(mc_inputs_2).float())
+            data_inputs = (torch.from_numpy(data_inputs_1).float(), torch.from_numpy(data_inputs_2).float())
+            eventwise_mc = torch.from_numpy(eventwise_mc).float()
+            eventwise_data = torch.from_numpy(eventwise_data).float()
+
+            num_batches = int(np.ceil(mc_inputs[0].shape[0] / batch_size))
+
+            origin_predictions_mc = []
+            origin_predictions_data = []
+            for batch in range(num_batches):
+                start_idx = batch * batch_size
+                end_idx = min((batch + 1) * batch_size, mc_inputs[0].shape[0])
+                mc_batch_inputs = (mc_inputs[0][start_idx:end_idx], mc_inputs[1][start_idx:end_idx])
+                data_batch_inputs = (data_inputs[0][start_idx:end_idx], data_inputs[1][start_idx:end_idx])
+                eventwise_mc_batch = eventwise_mc[start_idx:end_idx]
+                eventwise_data_batch = eventwise_data[start_idx:end_idx]
+
+                origin_predictions_mc_batch = model(*mc_batch_inputs, eventwise_mc_batch)
+                origin_predictions_data_batch = model(*data_batch_inputs, eventwise_data_batch)
+                origin_predictions_mc.append(origin_predictions_mc_batch.detach().numpy())
+                origin_predictions_data.append(origin_predictions_data_batch.detach().numpy())
+                print(200*" ", end='\r')  # Clear the line
+                print(f"Origin model predictions batch {batch+1}/{num_batches}", end='\r')
+            print(200*" ", end='\r')
+
+            origin_predictions_mc = np.concatenate(origin_predictions_mc, axis=0)
+            origin_predictions_data = np.concatenate(origin_predictions_data, axis=0)
+
+            np.savetxt(csv_mc_file, origin_predictions_mc[:max_rows], delimiter=",")
+            np.savetxt(csv_data_file, origin_predictions_data[:max_rows], delimiter=",")
+
 
 
         if model_type == "egamma":
@@ -758,6 +866,9 @@ def models_to_csv_files(models_path : Path | str,
 
             csv_mc_pair_file = csv_path / f"{name_parts[-1]}_paired_predictions_mc.csv"
             csv_data_pair_file = csv_path / f"{name_parts[-1]}_paired_predictions_data.csv"
+            if name_parts[-1] == "logvar":
+                csv_mc_pair_file = csv_path / f"{name_parts[-2]}_{name_parts[-1]}_paired_predictions_mc.csv"
+                csv_data_pair_file = csv_path / f"{name_parts[-2]}_{name_parts[-1]}_paired_predictions_data.csv"
 
             np.savetxt(csv_mc_pair_file, mc_pair_predictions[:max_rows], delimiter=",")
             np.savetxt(csv_data_pair_file, data_pair_predictions[:max_rows], delimiter=",")
@@ -789,7 +900,7 @@ def datasets_to_csv_files(
     csv_path = Path(csv_path)
     mc_dataset = _class_.H5EgammaDataset(
         files=h5_mc_files,
-        exclude_features=["truth"],
+        exclude_features=["truth", "cells", "tracks"],
         exclude_fields=valid_fields,
         valid_fields=valid_fields,
         y_source="truth",
@@ -797,73 +908,72 @@ def datasets_to_csv_files(
     )
     mc_type_dataset = _class_.H5EgammaDataset(
         files=h5_mc_files,
-        exclude_features=["truth"],
+        exclude_features=["truth", "cells", "tracks"],
         exclude_fields=valid_fields,
         valid_fields=valid_fields,
         y_source="egammas",
-        y_field=["truthType", "passiso_Loose_VarRad"],
+        y_field=["truthType", "passid_Loose", "passiso_Loose_VarRad", "pt", "eta", "phi"],
     )
     data_dataset = _class_.H5EgammaDataset(
         files=h5_data_files,
-        exclude_features=["truth"],
+        exclude_features=["truth", "cells", "tracks"],
         exclude_fields=valid_fields,
         valid_fields=valid_fields,
         y_source="egammas",
-        y_field=["pt", "eta", "phi", "passid_Medium", "passiso_Loose_VarRad"],
+        y_field=["pt", "eta", "phi", "passid_Loose", "passiso_Loose_VarRad"],
     )
-    mc_loader = DataLoader(_misc_._TargetOnlyDataset(mc_dataset), batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
-    type_loader = DataLoader(_misc_._TargetOnlyDataset(mc_type_dataset), batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
-    data_loader = DataLoader(_misc_._TargetOnlyDataset(data_dataset), batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    mc_loader = DataLoader(_misc_._TargetOnlyDataset(mc_dataset), batch_size=batch_size*4, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    type_loader = DataLoader(_misc_._TargetOnlyDataset(mc_type_dataset), batch_size=batch_size*4, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    data_loader = DataLoader(_misc_._TargetOnlyDataset(data_dataset), batch_size=batch_size*4, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    mc_length = len(mc_loader)
+    type_length = len(type_loader)
+    data_length = len(data_loader)
 
-    pt_truth_mc = []
-    eta_truth_mc = []
-    phi_truth_mc = []
-    type_truth_mc = []
-    iso_truth_mc = []
-    for target in mc_loader:
-        pt_truth_mc.append(target[:, 0].numpy())
-        eta_truth_mc.append(target[:, 1].numpy())
-        phi_truth_mc.append(target[:, 2].numpy())
-    for target in type_loader:
-        type_truth_mc.append(target[:, 0].numpy())
-        iso_truth_mc.append(target[:, 1].numpy())
-    pt_truth_mc = np.concatenate(pt_truth_mc)
-    eta_truth_mc = np.concatenate(eta_truth_mc)
-    phi_truth_mc = np.concatenate(phi_truth_mc)
-    type_truth_mc = np.concatenate(type_truth_mc)
-    iso_truth_mc = np.concatenate(iso_truth_mc)
+    mc_variables = [[], [], [], [], [], [], [], [], []]
+    data_variables = [[], [], [], [], []]
+    
+    for batch, target in enumerate(mc_loader):
+        for i in range(3):
+            mc_variables[i].append(target[:, i].numpy())
+        print(200*" ", end='\r')  # Clear the line
+        print(f"MC loading batch {batch+1}/{mc_length}", end='\r')
 
-    pt_truth_data = []
-    eta_truth_data = []
-    phi_truth_data = []
-    type_truth_data = []
-    iso_truth_data = []
-    for target in data_loader:
-        pt_truth_data.append(target[:, 0].numpy())
-        eta_truth_data.append(target[:, 1].numpy())
-        phi_truth_data.append(target[:, 2].numpy())
-        type_truth_data.append(target[:, 3].numpy())
-        iso_truth_data.append(target[:, 4].numpy())
-    pt_truth_data = np.concatenate(pt_truth_data)
-    eta_truth_data = np.concatenate(eta_truth_data)
-    phi_truth_data = np.concatenate(phi_truth_data)
-    type_truth_data = np.concatenate(type_truth_data)
-    iso_truth_data = np.concatenate(iso_truth_data)
+    for batch, target in enumerate(type_loader):
+        for i in range(6):
+            mc_variables[i+3].append(target[:, i].numpy())
+        print(200*" ", end='\r')  # Clear the line
+        print(f"MC type loading batch {batch+1}/{type_length}", end='\r')
 
-    np.savetxt(csv_path / "pt_egamma_truth_mc.csv", pt_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "eta_egamma_truth_mc.csv", eta_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "phi_egamma_truth_mc.csv", phi_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "type_egamma_truth_mc.csv", type_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "isolation_egamma_truth_mc.csv", iso_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "pt_egamma_truth_data.csv", pt_truth_data[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "eta_egamma_truth_data.csv", eta_truth_data[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "phi_egamma_truth_data.csv", phi_truth_data[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "type_egamma_truth_data.csv", type_truth_data[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "isolation_egamma_truth_data.csv", iso_truth_data[:max_rows], delimiter=",")
+    for i in range(len(mc_variables)):
+        mc_variables[i] = np.concatenate(mc_variables[i])
+
+    for batch, target in enumerate(data_loader):
+        for i in range(5):
+            data_variables[i].append(target[:, i].numpy())
+        print(200*" ", end='\r')  # Clear the line
+        print(f"Data loading batch {batch+1}/{data_length}", end='\r')
+    print(200*" ", end='\r') 
+
+    for i in range(len(data_variables)):
+        data_variables[i] = np.concatenate(data_variables[i])
+
+    name_list = ["pt", "eta", "phi", "type", "isolation"]
+
+    for i in range(3):
+        np.savetxt(csv_path / f"{name_list[i]}_egamma_truth_mc.csv", mc_variables[i][:max_rows], delimiter=",")
+        np.savetxt(csv_path / f"{name_list[i]}_egamma_atlas_mc.csv", mc_variables[i+6][:max_rows], delimiter=",")
+        np.savetxt(csv_path / f"{name_list[i]}_egamma_atlas_data.csv", data_variables[i][:max_rows], delimiter=",")
+
+    np.savetxt(csv_path / f"{name_list[3]}_egamma_truth_mc.csv", mc_variables[3][:max_rows], delimiter=",")
+    np.savetxt(csv_path / f"{name_list[3]}_egamma_atlas_mc.csv", mc_variables[4][:max_rows], delimiter=",")
+    np.savetxt(csv_path / f"{name_list[4]}_egamma_atlas_mc.csv", mc_variables[5][:max_rows], delimiter=",")
+
+    for i in range(2):
+        np.savetxt(csv_path / f"{name_list[i+3]}_egamma_atlas_data.csv", data_variables[i+3][:max_rows], delimiter=",")
 
     mc_pair_dataset = _class_.ZPairDataset(
         files=h5_mc_files,
-        exclude_features=["truth"],
+        exclude_features=["truth", "cells", "tracks"],
         exclude_fields=valid_fields,
         valid_fields=valid_fields,
         y_source="egammas",
@@ -871,47 +981,56 @@ def datasets_to_csv_files(
     )
     data_pair_dataset = _class_.ZPairDataset(
         files=h5_data_files,
-        exclude_features=["truth"],
+        exclude_features=["truth", "cells", "tracks"],
         exclude_fields=valid_fields,
         valid_fields=valid_fields,
         y_source="egammas",
-        y_field=["passid_Medium"],
+        y_field=["passid_Loose"],
     )
 
-    mc_pair_loader = DataLoader(_misc_._TargetOnlyDataset(mc_pair_dataset), batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    mc_pair_loader = DataLoader(_misc_._TargetOnlyDataset(mc_pair_dataset), batch_size=batch_size*4, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
     origin_truth_mc = []
     for target in mc_pair_loader:
-        origin_truth_mc.append(target[:, 0] * target[:, 1]) 
+        e1_origin = target[:, 0] == 13
+        e2_origin = target[:, 1] == 13
+        origin_truth_mc.append(e1_origin * e2_origin) 
+        print(200*" ", end='\r')  # Clear the line
+        print(f"Pair loading batch {batch+1}/{data_length}", end='\r')
     origin_truth_mc = np.concatenate(origin_truth_mc)
+    print(200*" ", end='\r')
+
+    mc_variables_pair = [[], [], [], [], [], [], [], [], []]
+    data_variables_pair = [[], [], [], [], []]
+
+    for i in range(len(mc_variables_pair)):
+        mc_variables_pair[i] = electron_predictions_to_pair_predictions(mc_variables[i], mc_dataset, mc_pair_dataset)
+    for i in range(len(data_variables_pair)):
+        data_variables_pair[i] = electron_predictions_to_pair_predictions(data_variables[i], data_dataset, data_pair_dataset)
+
+    z_mass_truth_mc = _misc_._compute_z_mass(mc_variables_pair[0][:, 0], mc_variables_pair[1][:, 0], mc_variables_pair[2][:, 0], mc_variables_pair[0][:, 1], mc_variables_pair[1][:, 1], mc_variables_pair[2][:, 1])
+    z_mass_atlas_mc = _misc_._compute_z_mass(mc_variables_pair[6][:, 0], mc_variables_pair[7][:, 0], mc_variables_pair[8][:, 0], mc_variables_pair[6][:, 1], mc_variables_pair[7][:, 1], mc_variables_pair[8][:, 1])
+    z_mass_atlas_data = _misc_._compute_z_mass(data_variables_pair[0][:, 0], data_variables_pair[1][:, 0], data_variables_pair[2][:, 0], data_variables_pair[0][:, 1], data_variables_pair[1][:, 1], data_variables_pair[2][:, 1])
+
+    origin_atlas_mc = (abs(z_mass_atlas_mc/1000.0 - 91.2) < 100.0) & (mc_variables_pair[4][:, 0] == 1) & (mc_variables_pair[4][:, 1] == 1) #& ((mc_variables_pair[6][:, 0]/1000.0 > 45.0) | (mc_variables_pair[6][:, 1]/1000.0 > 45.0))
+    origin_atlas_data = (abs(z_mass_atlas_data/1000.0 - 91.2) < 100.0) & (data_variables_pair[3][:, 0] == 1) & (data_variables_pair[3][:, 1] == 1) #& ((data_variables_pair[0][:, 0]/1000.0 > 45.0) | (data_variables_pair[0][:, 1]/1000.0 > 45.0))
 
     np.savetxt(csv_path / "origin_pair_truth_mc.csv", origin_truth_mc[:max_rows], delimiter=",")
+    np.savetxt(csv_path / "origin_pair_atlas_mc.csv", origin_atlas_mc[:max_rows], delimiter=",")
+    np.savetxt(csv_path / "origin_pair_atlas_data.csv", origin_atlas_data[:max_rows], delimiter=",")
 
-    pt_pair_truth_mc = electron_predictions_to_pair_predictions(pt_truth_mc, mc_dataset, mc_pair_dataset)
-    eta_pair_truth_mc = electron_predictions_to_pair_predictions(eta_truth_mc, mc_dataset, mc_pair_dataset)
-    phi_pair_truth_mc = electron_predictions_to_pair_predictions(phi_truth_mc, mc_dataset, mc_pair_dataset)
-    type_pair_truth_mc = electron_predictions_to_pair_predictions(type_truth_mc, mc_dataset, mc_pair_dataset)
-    iso_pair_truth_mc = electron_predictions_to_pair_predictions(iso_truth_mc, mc_dataset, mc_pair_dataset)
-    pt_pair_truth_data = electron_predictions_to_pair_predictions(pt_truth_data, data_dataset, data_pair_dataset)
-    eta_pair_truth_data = electron_predictions_to_pair_predictions(eta_truth_data, data_dataset, data_pair_dataset)
-    phi_pair_truth_data = electron_predictions_to_pair_predictions(phi_truth_data, data_dataset, data_pair_dataset)
-    type_pair_truth_data = electron_predictions_to_pair_predictions(type_truth_data, data_dataset, data_pair_dataset)
-    iso_pair_truth_data = electron_predictions_to_pair_predictions(iso_truth_data, data_dataset, data_pair_dataset)
+    np.savetxt(csv_path / "z_pair_truth_mc.csv", z_mass_truth_mc[:max_rows], delimiter=",")
+    np.savetxt(csv_path / "z_pair_atlas_mc.csv", z_mass_atlas_mc[:max_rows], delimiter=",")
+    np.savetxt(csv_path / "z_pair_atlas_data.csv", z_mass_atlas_data[:max_rows], delimiter=",")
 
-    np.savetxt(csv_path / "pt_pair_truth_mc.csv", pt_pair_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "eta_pair_truth_mc.csv", eta_pair_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "phi_pair_truth_mc.csv", phi_pair_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "type_pair_truth_mc.csv", type_pair_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "isolation_pair_truth_mc.csv", iso_pair_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "pt_pair_truth_data.csv", pt_pair_truth_data[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "eta_pair_truth_data.csv", eta_pair_truth_data[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "phi_pair_truth_data.csv", phi_pair_truth_data[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "type_pair_truth_data.csv", type_pair_truth_data[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "isolation_pair_truth_data.csv", iso_pair_truth_data[:max_rows], delimiter=",")
+    for i in range(3):
+        np.savetxt(csv_path / f"{name_list[i]}_pair_truth_mc.csv", mc_variables_pair[i][:max_rows], delimiter=",")
+        np.savetxt(csv_path / f"{name_list[i]}_pair_atlas_mc.csv", mc_variables_pair[i+6][:max_rows], delimiter=",")
+        np.savetxt(csv_path / f"{name_list[i]}_pair_atlas_data.csv", data_variables_pair[i][:max_rows], delimiter=",")
 
+    np.savetxt(csv_path / f"{name_list[3]}_pair_truth_mc.csv", mc_variables_pair[3][:max_rows], delimiter=",")
+    np.savetxt(csv_path / f"{name_list[3]}_pair_atlas_mc.csv", mc_variables_pair[4][:max_rows], delimiter=",")
+    np.savetxt(csv_path / f"{name_list[4]}_pair_atlas_mc.csv", mc_variables_pair[5][:max_rows], delimiter=",")
 
-    z_pair_truth_mc = _misc_._compute_z_mass(pt_pair_truth_mc[:, 0], eta_pair_truth_mc[:, 0], phi_pair_truth_mc[:, 0], pt_pair_truth_mc[:, 1], eta_pair_truth_mc[:, 1], phi_pair_truth_mc[:, 1])
-    z_pair_truth_data = _misc_._compute_z_mass(pt_pair_truth_data[:, 0], eta_pair_truth_data[:, 0], phi_pair_truth_data[:, 0], pt_pair_truth_data[:, 1], eta_pair_truth_data[:, 1], phi_pair_truth_data[:, 1])
-
-    np.savetxt(csv_path / "z_mass_pair_truth_mc.csv", z_pair_truth_mc[:max_rows], delimiter=",")
-    np.savetxt(csv_path / "z_mass_pair_truth_data.csv", z_pair_truth_data[:max_rows], delimiter=",")
+    for i in range(2):
+        np.savetxt(csv_path / f"{name_list[i+3]}_pair_atlas_data.csv", data_variables_pair[i+3][:max_rows], delimiter=",")
