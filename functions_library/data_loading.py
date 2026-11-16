@@ -1012,8 +1012,8 @@ def datasets_to_csv_files(
     z_mass_atlas_mc = _misc_._compute_z_mass(mc_variables_pair[6][:, 0], mc_variables_pair[7][:, 0], mc_variables_pair[8][:, 0], mc_variables_pair[6][:, 1], mc_variables_pair[7][:, 1], mc_variables_pair[8][:, 1])
     z_mass_atlas_data = _misc_._compute_z_mass(data_variables_pair[0][:, 0], data_variables_pair[1][:, 0], data_variables_pair[2][:, 0], data_variables_pair[0][:, 1], data_variables_pair[1][:, 1], data_variables_pair[2][:, 1])
 
-    origin_atlas_mc = (abs(z_mass_atlas_mc/1000.0 - 91.2) < 100.0) & (mc_variables_pair[4][:, 0] == 1) & (mc_variables_pair[4][:, 1] == 1) #& ((mc_variables_pair[6][:, 0]/1000.0 > 45.0) | (mc_variables_pair[6][:, 1]/1000.0 > 45.0))
-    origin_atlas_data = (abs(z_mass_atlas_data/1000.0 - 91.2) < 100.0) & (data_variables_pair[3][:, 0] == 1) & (data_variables_pair[3][:, 1] == 1) #& ((data_variables_pair[0][:, 0]/1000.0 > 45.0) | (data_variables_pair[0][:, 1]/1000.0 > 45.0))
+    origin_atlas_mc = (abs(z_mass_atlas_mc/1000.0 - 91.2) < 100.0) & (((mc_variables_pair[4][:, 0]) == 1 & (mc_variables_pair[6][:, 0]/1000.0 > 25.0)) | ((mc_variables_pair[4][:, 1]) == 1 & (mc_variables_pair[6][:, 1]/1000.0 > 25.0)))
+    origin_atlas_data = (abs(z_mass_atlas_data/1000.0 - 91.2) < 100.0) & (((data_variables_pair[3][:, 0] == 1) & (data_variables_pair[0][:, 0]/1000.0 > 25.0)) | ((data_variables_pair[3][:, 1] == 1) & (data_variables_pair[0][:, 1]/1000.0 > 25.0)))
 
     np.savetxt(csv_path / "origin_pair_truth_mc.csv", origin_truth_mc[:max_rows], delimiter=",")
     np.savetxt(csv_path / "origin_pair_atlas_mc.csv", origin_atlas_mc[:max_rows], delimiter=",")

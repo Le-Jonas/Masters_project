@@ -471,3 +471,44 @@ def true_data_fit(
         breit_wigner_crystal_ball(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb)
         + exponential_decay(x, amplitude_bkg, decay_constant, x_range=x_range)
     )
+
+def kde_estimate(kernel_func, data, mesh, h, mesh_dim : int = 1):
+    """
+    Input: 
+        mesh: a list of mesh arrays for each dimension
+        mesh_dim: the number of dimensions of the mesh
+        h: the bandwidth parameter for the kernel function
+        kernel_func: the normalized kernel function to apply to the distances
+        data: a list of data arrays for each dimension
+    Output:
+        The kernel density estimate evaluated on the mesh.
+    """
+    if mesh_dim == 1:
+        dist = mesh[..., None] - data
+    else:
+        dist_squared = 0
+        for i in range(mesh_dim):
+            dist_squared += (mesh[i][..., None] - data[i])**2
+        dist = np.sqrt(dist_squared)
+    normal = kernel_func(dist, h)
+    if mesh_dim == 1:
+        return np.sum(normal, axis=1)/len(data)
+    else:
+        return np.sum(normal, axis=mesh_dim)/len(data[0])
+
+def epafunc(x, h):
+    mask = np.abs(x) <= h
+    return 0.75 * (1 - (x/h)**2)*mask / h 
+def gauss_func(x, h):
+    return (1/(h*np.sqrt(2*np.pi))) * np.exp(-0.5 * (x/h)**2)
+def KDE(x, h, func, data):
+    diff = np.min([(x[:, None] - data)%(24*3600), (data - x[:, None])%(24*3600)], axis=0)
+    normal = func(diff, h)
+    return np.mean(normal, axis=1)
+def epafunc2D(x, h):
+    mask = np.abs(x) <= h
+    return (2/(np.pi*h**2)) * (1 - (x/h)**2)*mask
+def KDE_2D(mesh, h, func, data):
+    dist = np.sqrt((mesh[0][:, :, None] - data[0])**2 + (mesh[1][:, :, None] - data[1])**2)
+    normal = func(dist, h)
+    return np.sum(normal, axis=2)/len(data[0])

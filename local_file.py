@@ -15,7 +15,7 @@ def _find_h5_files(base_string: str ) -> tuple:
 
 def _train():
     # Choose two folders from the same particle type and simulation category.
-    base_string = "C:/Users/jonas/Coding/Master/Main/h5/"
+    base_string = f"C:/Users/jonas/{system_string}/Main/h5/"
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
@@ -172,7 +172,7 @@ def _train():
         plt.close()
 
 def _write(a, b, c):
-    base_string = "C:/Users/jonas/Coding/Master/Main/h5/"
+    base_string = f"C:/Users/jonas/{system_string}/Main/h5/"
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
     validation_split = 0.25
@@ -226,7 +226,7 @@ def _write(a, b, c):
             )
 
 def _plot():
-    base_string = "C:/Users/jonas/Coding/Master/Main/Masters_project"
+    base_string = f"C:/Users/jonas/{system_string}/Main/Masters_project"
     csv_string = f"{base_string}/csv_library"
     atlas_mass_paths = [f"{csv_string}/z_pair_atlas_mc.csv", f"{csv_string}/z_pair_atlas_data.csv"]
     atlas_origin_paths = [f"{csv_string}/origin_pair_atlas_mc.csv", f"{csv_string}/origin_pair_atlas_data.csv"]
@@ -252,7 +252,10 @@ if __name__ == "__main__":
     from pathlib import Path
     from datetime import date
 
+    system_string = "Desktop/Masters" #Laptop path
+    #system_string = "Coding/Master" #Desktop path
+
     #_train()
-    _write(0, 0, 1)
+    #_write(0, 0, 1)
     _plot()
     print("Training and writing completed successfully.")
