@@ -19,12 +19,6 @@ def _train():
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
     h5_files_data = h5_files_data[:20]
 
-    for i in range(len(h5_files_egam)):
-        print(f"EGAM file {i}: {h5_files_egam[i]}")
-    print("\n\n\n")
-    for i in range(len(h5_files_data)):
-        print(f"DATA file {i}: {h5_files_data[i]}")
-
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
     variables = ["pt"]
 
@@ -43,6 +37,8 @@ def _train():
         z_target = True if variable == "z" else False
         log_target = False
         use_mask = "../Masters_project/models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
+
+        print(device)
 
         break
 
