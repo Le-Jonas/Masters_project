@@ -36,7 +36,7 @@ def _train():
         norm_target = True if variable in ["origin"] else False
         z_target = True if variable == "z" else False
         log_target = False
-        use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
+        use_mask = "../Masters_project/models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
 
         variable_name = "pair_" + variable if variable in ["z", "origin", "origin-all"] else variable
         if variable != "origin":
@@ -73,10 +73,10 @@ def _train():
                 domain_input = True,
                 domain = "bool",
                 periodic_save_interval = 2,
-                periodic_save_path = f"./models_library/model_{variable_name}.pth",
+                periodic_save_path = f"../Masters_project/models_library/model_{variable_name}.pth",
                 use_mask = use_mask
             )
-            torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
+            torch.save(model.state_dict(), f"../Masters_project/models_library/model_{variable_name}.pth")
 
             if variable in ["pt", "eta", "phi"]:
                 model_var, train_losses_var, val_losses_var, _, _, _ = model_training.compressed_training_function(
@@ -112,11 +112,11 @@ def _train():
                     domain_input = True,
                     domain = "bool",
                     periodic_save_interval = 2,
-                    periodic_save_path = f"./models_library/model_{variable_name}_logvar.pth",
+                    periodic_save_path = f"../Masters_project/models_library/model_{variable_name}_logvar.pth",
                     use_mask = use_mask,
                     variance_target = model
                 )
-                torch.save(model_var.state_dict(), f"./models_library/model_{variable_name}_logvar.pth")
+                torch.save(model_var.state_dict(), f"../Masters_project/models_library/model_{variable_name}_logvar.pth")
 
                 fig = plt.figure(figsize=(10, 6))
                 plt.plot(np.arange(len(train_losses_var)), train_losses_var, label="Training Loss")
@@ -125,7 +125,7 @@ def _train():
                 plt.ylabel("Loss")
                 plt.title(f"Training and Validation Loss for {variable_name}")
                 plt.legend()
-                misc_functions.save_plot(f"./plots/{date.today()}/loss_plot_{variable_name}_logvar.png", fig)
+                misc_functions.save_plot(f"../Masters_project/plots/{date.today()}/loss_plot_{variable_name}_logvar.png", fig)
                 plt.close()
         else:
             model, train_losses, val_losses, _, _, _ = model_training.compressed_training_function(
@@ -159,11 +159,11 @@ def _train():
                 #mixed_target_loss_weight = 0.10,
                 domain_input = True,
                 periodic_save_interval = 2,
-                periodic_save_path = f"./models_library/model_{variable_name}.pth",
-                z_pid = (True, f"./models_library/model_type.pth", f"./models_library/model_isolation.pth")
+                periodic_save_path = f"../Masters_project/models_library/model_{variable_name}.pth",
+                z_pid = (True, f"../Masters_project/models_library/model_type.pth", f"../Masters_project/models_library/model_isolation.pth")
             )            
 
-            torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
+            torch.save(model.state_dict(), f"../Masters_project/models_library/model_{variable_name}.pth")
 
         fig = plt.figure(figsize=(10, 6))
         plt.plot(np.arange(len(train_losses)), train_losses, label="Training Loss")
@@ -172,7 +172,7 @@ def _train():
         plt.ylabel("Loss")
         plt.title(f"Training and Validation Loss for {variable_name}")
         plt.legend()
-        misc_functions.save_plot(f"./plots/{date.today()}/loss_plot_{variable_name}.png", fig)
+        misc_functions.save_plot(f"../Masters_project/plots/{date.today()}/loss_plot_{variable_name}.png", fig)
         plt.close()
 
 def _write(a, b, c):
