@@ -4,7 +4,7 @@ def _find_h5_files(base_string: str ) -> tuple:
     data_str = base_string + "user.amoranch.data15_13TeV.data15_13TeV.egd.electrons-cells-data.EGAM1.25_0_63.44b1f75_output.h5"
     name_strings = ["MC_EGAM1", "MC_EGAM7", "DATA_EGAM", "MC_EGAM"]
     full_strings = [egam1_str, egam7_str, data_str]
-    h5_files_dir = data_loading.create_path_lists(full_strings, outputs=name_strings, mixing_list = [(0, 1)], seed=0)
+    h5_files_dir = data_loading.create_path_lists(full_strings, outputs=name_strings, mixing_list = [(0, 1)], mixing_lengths = [(12, 6)], seed=0)
     h5_files_egam1 = h5_files_dir[name_strings[0]]
     h5_files_egam7 = h5_files_dir[name_strings[1]]
     h5_files_data = h5_files_dir[name_strings[-2]]
@@ -19,8 +19,11 @@ def _train():
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
     h5_files_data = h5_files_data[:20]
 
-    print(h5_files_egam)
-    print(h5_files_data)
+    for i in range(len(h5_files_egam)):
+        print(f"EGAM file {i}: {h5_files_egam[i]}")
+    print("\n\n\n")
+    for i in range(len(h5_files_data)):
+        print(f"DATA file {i}: {h5_files_data[i]}")
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
     variables = ["pt"]
