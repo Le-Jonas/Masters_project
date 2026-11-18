@@ -25,9 +25,9 @@ def _train():
     for variable in variables:
         dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin", "origin-all"] else dataset_classes.H5EgammaDataset
         nn_model = neural_models.ParticlePairNetwork if variable in ["z", "origin", "origin-all"] else neural_models.ParticleOriginNetwork
-        loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "origin-all", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else training_classes.logcosh_loss() if variable in ["pt", "z"] else torch.nn.MSELoss()
+        loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "origin-all", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else training_classes.LogCoshLoss() if variable in ["pt", "z"] else torch.nn.MSELoss()
         if variable in ["pt", "eta", "phi"]:
-            variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.GaussianVarianceNLLLoss()
+            variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.RobustGaussianVarianceNLLLoss() if variable in ["pt"] else training_classes.GaussianVarianceNLLLoss()
 
         field = [["truthOrigin", "pt", "eta", "phi"], ["passid_Loose", "pt", "eta", "phi"]] if variable in ["origin", "origin-all"] else [["truthType", "passid_VeryLoose"], ["passid_Medium", "passid_VeryLoose"]] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthType"], [variable, "passid_Tight"]]
         output_size = 1 #if variable in ["origin", "pt", "z"] else 2
@@ -37,10 +37,6 @@ def _train():
         z_target = True if variable == "z" else False
         log_target = False
         use_mask = "../Masters_project/models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
-
-        print(device)
-
-        break
 
         variable_name = "pair_" + variable if variable in ["z", "origin", "origin-all"] else variable
         if variable != "origin":
@@ -66,7 +62,7 @@ def _train():
                 binary_target = binary_target,
                 z_target = z_target,
                 norm_target = norm_target,
-                pin_memory = False,
+                pin_memory = True,
                 num_epochs = 5,
                 sample_size = 1_000_000,
                 #domain_adversary = True,
@@ -78,7 +74,8 @@ def _train():
                 domain = "bool",
                 periodic_save_interval = 2,
                 periodic_save_path = f"../Masters_project/models_library/model_{variable_name}.pth",
-                use_mask = use_mask
+                use_mask = use_mask,
+                verbosity = 0
             )
             torch.save(model.state_dict(), f"../Masters_project/models_library/model_{variable_name}.pth")
 
@@ -105,7 +102,7 @@ def _train():
                     binary_target = binary_target,
                     z_target = z_target,
                     norm_target = norm_target,
-                    pin_memory = False,
+                    pin_memory = True,
                     num_epochs = 5,
                     sample_size = 1_000_000,
                     #domain_adversary = True,
@@ -118,7 +115,8 @@ def _train():
                     periodic_save_interval = 2,
                     periodic_save_path = f"../Masters_project/models_library/model_{variable_name}_logvar.pth",
                     use_mask = use_mask,
-                    variance_target = model
+                    variance_target = model,
+                    verbosity = 0
                 )
                 torch.save(model_var.state_dict(), f"../Masters_project/models_library/model_{variable_name}_logvar.pth")
 
@@ -153,7 +151,7 @@ def _train():
                 binary_target = binary_target,
                 z_target = z_target,
                 norm_target = norm_target,
-                pin_memory = False,
+                pin_memory = True,
                 num_epochs = 5,
                 sample_size = 1_000_000,
                 #domain_adversary = True,
@@ -164,7 +162,8 @@ def _train():
                 domain_input = True,
                 periodic_save_interval = 2,
                 periodic_save_path = f"../Masters_project/models_library/model_{variable_name}.pth",
-                z_pid = (True, f"../Masters_project/models_library/model_type.pth", f"../Masters_project/models_library/model_isolation.pth")
+                z_pid = (True, f"../Masters_project/models_library/model_type.pth", f"../Masters_project/models_library/model_isolation.pth"),
+                verbosity = 0
             )            
 
             torch.save(model.state_dict(), f"../Masters_project/models_library/model_{variable_name}.pth")

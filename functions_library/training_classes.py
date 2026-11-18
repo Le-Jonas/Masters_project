@@ -205,6 +205,77 @@ class GaussianVarianceNLLLoss(_GaussianNLLBase):
         return self._reduce(losses)
 
 
+class RobustGaussianVarianceNLLLoss(_GaussianNLLBase):
+    def __init__(
+        self,
+        reduction: str = "mean",
+        min_log_variance: float = -10.0,
+        max_log_variance: float = 7.0,
+        degrees_of_freedom: float = 4.0,
+    ):
+        super().__init__(reduction, min_log_variance, max_log_variance)
+        if degrees_of_freedom <= 2.0:
+            raise ValueError(
+                "degrees_of_freedom must be greater than 2 so the variance "
+                "is finite."
+            )
+        self.degrees_of_freedom = degrees_of_freedom
+
+    def forward(
+        self,
+        outputs: torch.Tensor,
+        targets: torch.Tensor,
+        value_outputs: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute a heavy-tailed Student-t NLL for a fixed value prediction.
+
+        Unlike Gaussian NLL, this loss grows logarithmically for large
+        standardized residuals instead of squaring them. This makes it better
+        suited to targets with long tails and extreme outliers. ``outputs``
+        contains the variance model's raw log-variance predictions.
+        """
+        if outputs.ndim == 0:
+            raise ValueError(
+                "RobustGaussianVarianceNLLLoss expects a non-scalar output "
+                "tensor."
+            )
+
+        try:
+            targets = targets.reshape_as(outputs)
+        except RuntimeError as error:
+            raise ValueError(
+                "RobustGaussianVarianceNLLLoss received targets with shape "
+                f"{tuple(targets.shape)} that is incompatible with outputs "
+                f"of shape {tuple(outputs.shape)}."
+            ) from error
+
+        try:
+            value_outputs = value_outputs.reshape_as(outputs)
+        except RuntimeError as error:
+            raise ValueError(
+                "RobustGaussianVarianceNLLLoss received value outputs with "
+                f"shape {tuple(value_outputs.shape)} that is incompatible "
+                f"with variance outputs of shape {tuple(outputs.shape)}."
+            ) from error
+
+        log_variance = self._bounded_log_variance(outputs)
+        variance = torch.exp(log_variance)
+        residual = targets - value_outputs.detach()
+        nu = torch.as_tensor(
+            self.degrees_of_freedom,
+            device=residual.device,
+            dtype=residual.dtype,
+        )
+
+        losses = (
+            0.5 * log_variance
+            + 0.5 * (nu + 1.0)
+            * torch.log1p(residual.square() / (nu * variance))
+        )
+        return self._reduce(losses)
+
+
 class AngularGaussianVarianceNLLLoss(_GaussianNLLBase):
     def __init__(
         self,
@@ -293,7 +364,7 @@ class AngularGaussianNLLLoss(_GaussianNLLBase):
         )
         return self._reduce(losses)
 
-class logcosh_loss(torch.nn.Module):
+class LogCoshLoss(torch.nn.Module):
     def __init__(self, reduction: str = "mean"):
         super().__init__()
         if reduction not in {"none", "mean", "sum"}:
@@ -317,13 +388,35 @@ class logcosh_loss(torch.nn.Module):
         Returns:
             A scalar or per-sample tensor, depending on ``reduction``.
         """
-        if torch.any(targets == 0):
-            outputs = outputs[targets != 0]
-            targets = targets[targets != 0]
-            if len(targets) == 0:
-                raise ValueError("Targets cannot all be zero.")
-        residual_ratio = (outputs - targets)/targets
-        losses = torch.log(torch.cosh(residual_ratio))
+        try:
+            targets = targets.reshape_as(outputs)
+        except RuntimeError as error:
+            raise ValueError(
+                "LogCoshLoss received targets with shape "
+                f"{tuple(targets.shape)} that is incompatible with outputs "
+                f"of shape {tuple(outputs.shape)}."
+            ) from error
+
+        valid_targets = targets != 0
+        safe_targets = torch.where(valid_targets, targets, torch.ones_like(targets))
+        residual_ratio = torch.where(
+            valid_targets,
+            (outputs - targets) / safe_targets,
+            torch.zeros_like(outputs),
+        )
+        absolute_residual = residual_ratio.abs()
+        losses = (
+            absolute_residual
+            + F.softplus(-2.0 * absolute_residual)
+            - torch.log(
+                torch.as_tensor(
+                    2.0,
+                    dtype=outputs.dtype,
+                    device=outputs.device,
+                )
+            )
+        )
+        losses = torch.where(valid_targets, losses, torch.zeros_like(losses))
         if self.reduction == "mean":
             return losses.mean()
         elif self.reduction == "sum":

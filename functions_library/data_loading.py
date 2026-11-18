@@ -571,6 +571,7 @@ def models_to_csv_files(models_path : Path | str,
                         max_rows : int | None = None,
                         num_workers : int = 4,
                         pin_memory : bool = False,
+                        domain_input : bool = False,
                         ) -> None:
     """
     Convert model predictions to CSV files.
@@ -669,13 +670,16 @@ def models_to_csv_files(models_path : Path | str,
     else:
         raise ValueError(f"Invalid model_type: {model_type}. Must be 'egamma' or 'pair'.")
 
+    if domain_input:
+        event_size += 1
+
     for model_str in models_path.glob("*.pth"):
         name = model_str.stem
         name_parts = name.split("_")
         output_size = 1 #if name_parts[-1] in ["origin", "pt", "z"] else 2
 
-        if name_parts[-1] not in ["logvar", "origin"]:
-            continue
+        if name_parts[-1] not in ["pt"]:
+                continue
 
         if (name_parts[1] == "pair" and model_type == "egamma"):
             print(f"Skipping model {name} because it is a pair model and model_type is 'egamma'.")
@@ -765,8 +769,8 @@ def models_to_csv_files(models_path : Path | str,
             mc_loader = DataLoader(mc_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
             data_loader = DataLoader(data_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
-            mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
-            data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target)
+            mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target, domain_input=0)
+            data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target, domain_input=1)
             np.savetxt(csv_mc_file, mc_predictions[:max_rows], delimiter=",")
             np.savetxt(csv_data_file, data_predictions[:max_rows], delimiter=",")
 
@@ -795,15 +799,21 @@ def models_to_csv_files(models_path : Path | str,
             mc_length = len(mc_loader)
             data_length = len(data_loader)
             for batch, data in enumerate(mc_loader):
-                _, _, eventwise, target, _ = data
+                _, _, eventwise, target, domain = data
                 mc_targets.append(target.numpy())
-                eventwise_mc.append(eventwise.numpy())
+                if domain_input:
+                    eventwise_mc.append(torch.column_stack((eventwise, domain.to(dtype=eventwise.dtype))).numpy())
+                else:
+                    eventwise_mc.append(eventwise.numpy())
                 print(200*" ", end='\r')  # Clear the line
                 print(f"MC loading batch {batch+1}/{mc_length}", end='\r')
             for batch, data in enumerate(data_loader):
-                _, _, eventwise, target, _ = data
+                _, _, eventwise, target, domain = data
                 data_targets.append(target.numpy())
-                eventwise_data.append(eventwise.numpy())
+                if domain_input:
+                    eventwise_data.append(torch.column_stack((eventwise, domain.to(dtype=eventwise.dtype))).numpy())
+                else:
+                    eventwise_data.append(eventwise.numpy())
                 print(200*" ", end='\r')  # Clear the line
                 print(f"Data loading batch {batch+1}/{data_length}", end='\r')
             print(200*" ", end='\r')

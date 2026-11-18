@@ -24,9 +24,9 @@ def _train():
     for variable in variables:
         dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin", "origin-all"] else dataset_classes.H5EgammaDataset
         nn_model = neural_models.ParticlePairNetwork if variable in ["z", "origin", "origin-all"] else neural_models.ParticleOriginNetwork
-        loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "origin-all", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else training_classes.logcosh_loss() if variable in ["pt", "z"] else torch.nn.MSELoss()
+        loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "origin-all", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else training_classes.LogCoshLoss() if variable in ["pt", "z"] else torch.nn.MSELoss()
         if variable in ["pt", "eta", "phi"]:
-            variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.GaussianVarianceNLLLoss()
+            variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.RobustGaussianVarianceNLLLoss() if variable in ["pt"] else training_classes.GaussianVarianceNLLLoss()
 
         field = [["truthOrigin", "pt", "eta", "phi"], ["passid_Loose", "pt", "eta", "phi"]] if variable in ["origin", "origin-all"] else [["truthType", "passid_VeryLoose"], ["passid_Medium", "passid_VeryLoose"]] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthType"], [variable, "passid_Tight"]]
         output_size = 1 #if variable in ["origin", "pt", "z"] else 2
@@ -62,7 +62,7 @@ def _train():
                 z_target = z_target,
                 norm_target = norm_target,
                 pin_memory = False,
-                num_epochs = 5,
+                num_epochs = 10,
                 sample_size = 1_000_000,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
@@ -201,6 +201,7 @@ def _write(a, b, c):
             max_rows = 1_000_000,
             model_type = "egamma",
             model_configs = model_configs,
+            domain_input = True,
         )
     if b:
         data_loading.models_to_csv_files(
@@ -215,6 +216,7 @@ def _write(a, b, c):
             max_rows = 1_000_000,
             model_type = "pair",
             model_configs = model_configs,
+            domain_input = True,
         )
     if c:
         data_loading.datasets_to_csv_files(
@@ -258,7 +260,7 @@ if __name__ == "__main__":
     #system_string = "Desktop/Masters" #Laptop path
     system_string = "Coding/Master" #Desktop path
 
-    _train()
-    #_write(0, 0, 1)
+    #_train()
+    _write(1, 0, 0)
     #_plot()
     print("Training and writing completed successfully.")

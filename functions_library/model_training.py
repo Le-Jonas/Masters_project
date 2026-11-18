@@ -274,6 +274,7 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
             outputs = outputs + 2 * torch.log(std_t)
         else:
             outputs = outputs * std_t + mean_t
+        print("temp_error, using norm_target")
 
     if log_target:
         if variance_target:
@@ -281,9 +282,11 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
             #outputs = torch.exp(outputs) * (std_t**2)
         else:
             outputs = torch.expm1(outputs)
+        print("temp_error, using log_target")
 
     elif variance_target:
         outputs = torch.exp(0.5 * outputs)
+        print("temp_error, using variance_target")
 
     return outputs
 
@@ -313,7 +316,8 @@ def train_model(
         periodic_save_path : str | None = None,
         mask_model : torch.nn.Module | None = None,
         variance_target : torch.nn.Module | None = None,
-        z_pid : tuple[bool, torch.nn.Module, torch.nn.Module] = (False, None, None)
+        z_pid : tuple[bool, torch.nn.Module, torch.nn.Module] = (False, None, None),
+        verbosity : int = 1
 
     ) -> tuple[torch.nn.Module, list, list]:
     """
@@ -535,9 +539,9 @@ def train_model(
                 if mask.sum() == 0:
                     target_mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
                     target_mask = target_mask.to(dtype=torch.bool)
-
-                    print(200*" ", end='\r')  # Clear the line
-                    print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from prediction, {target_mask.sum()} valid samples from truth", end='\r')
+                    if verbosity > 0:
+                        print(200*" ", end='\r')  # Clear the line
+                        print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from prediction, {target_mask.sum()} valid samples from truth", end='\r')
                     continue
 
                 mask_targets = mask_targets[mask]
@@ -547,6 +551,9 @@ def train_model(
                 target_mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
                 target_mask = target_mask.to(dtype=torch.bool)
                 if target_mask.sum() == 0:
+                    if verbosity > 0:
+                        print(200*" ", end='\r')  # Clear the line
+                        print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from truth, {mask.sum()} valid samples from prediction", end='\r')
                     continue
 
                 targets = targets[mask][target_mask]
@@ -609,11 +616,12 @@ def train_model(
             samples_seen += batch_size
 
             average_loss = running_loss / samples_seen
-            print(
-                f'Batch {batch + 1}/{expected_batches}, '
-                f'Loss: {average_loss:.4f}',
-                end='\r',
-            )
+            if verbosity > 0:
+                print(
+                    f'Batch {batch + 1}/{expected_batches}, '
+                    f'Loss: {average_loss:.4f}',
+                    end='\r',
+                )
 
         if samples_seen == 0:
             raise ValueError("All samples were rejected.")
@@ -647,11 +655,14 @@ def train_model(
             mask_model=mask_model,
             variance_target=variance_target,
             z_pid=z_pid,
+            verbosity=verbosity
         )
         val_losses.append(val_loss)
         train_losses.append(epoch_loss)
-        print(200*" ", end='\r')  # Clear the line
-        print(f'Epoch {epoch+1}/{num_epochs}, Training Loss: {epoch_loss:.4f}, Validation Loss: {val_loss:.4f}')
+        if verbosity > 0:
+            print(200*" ", end='\r')  # Clear the line
+        if verbosity > -1:
+            print(f'Epoch {epoch+1}/{num_epochs}, Training Loss: {epoch_loss:.4f}, Validation Loss: {val_loss:.4f}')
 
         # Save the best model based on validation loss
         if val_loss < best_val_loss:
@@ -665,7 +676,8 @@ def train_model(
         if periodic_save_interval is not None and periodic_save_path is not None:
             if (epoch + 1) % periodic_save_interval == 0:
                 torch.save(best_model_state, periodic_save_path)
-                print(f"Model saved at epoch {epoch + 1} to {periodic_save_path}")
+                if verbosity > -1:
+                    print(f"Model saved at epoch {epoch + 1} to {periodic_save_path}")
 
     # Load the best model state before returning
     if best_model_state is not None:
@@ -697,7 +709,8 @@ def validate_model(
         norm_target : tuple | None = None,
         mask_model : torch.nn.Module | None = None,
         variance_target : torch.nn.Module | None = None,
-        z_pid : tuple[bool, torch.nn.Module, torch.nn.Module] = (False, None, None)
+        z_pid : tuple[bool, torch.nn.Module, torch.nn.Module] = (False, None, None),
+        verbosity : int = 1
         ) -> float:
     """
     Validate a PyTorch model using the provided validation data loader and loss function.
@@ -842,13 +855,15 @@ def validate_model(
                 eventwise_features = torch.column_stack((eventwise_features, domain_targets.to(dtype=eventwise_features.dtype)))
 
             if z_pid[0]:
-                mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
-                if mask.sum() == 0:
-                    print(200*" ", end='\r')  # Clear the line
-                    print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from truth", end='\r')
-                    continue
+                #mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
+                #if mask.sum() == 0:
+                #    print(200*" ", end='\r')  # Clear the line
+                #    print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from truth", end='\r')
+                #    continue
+                #mask = mask.to(dtype=torch.bool)
+                
+                mask = torch.tensor([True] * targets.shape[0], dtype=torch.bool, device=device)  # Initialize mask with all True values
 
-                mask = mask.to(dtype=torch.bool)
                 inputs = (inputs[0][mask], inputs[1][mask])
                 origin_inputs = (origin_inputs[:, 0][mask], origin_inputs[:, 1][mask])
                 eventwise_features = eventwise_features[mask]
@@ -868,9 +883,9 @@ def validate_model(
                 if mask.sum() == 0:
                     target_mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
                     target_mask = target_mask.to(dtype=torch.bool)
-
-                    print(200*" ", end='\r')  # Clear the line
-                    print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from prediction, {target_mask.sum()} valid samples from truth", end='\r')
+                    if verbosity > 0:
+                        print(200*" ", end='\r')  # Clear the line
+                        print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from prediction, {target_mask.sum()} valid samples from truth", end='\r')
                     continue
 
                 mask_targets = mask_targets[mask]
@@ -881,9 +896,9 @@ def validate_model(
                 target_mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
                 target_mask = target_mask.to(dtype=torch.bool)
                 if target_mask.sum() == 0:
-
-                    print(200*" ", end='\r')  # Clear the line
-                    print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from truth, {mask.sum()} valid samples from prediction", end='\r')
+                    if verbosity > 0:
+                        print(200*" ", end='\r')  # Clear the line
+                        print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from truth, {mask.sum()} valid samples from prediction", end='\r')
                     continue
                 targets = targets[mask][target_mask]
 
@@ -940,8 +955,10 @@ def validate_model(
             batch_size = targets.size(0)
             val_loss += loss.item() * batch_size
             samples_seen += batch_size
-            print(200*" ", end='\r')  # Clear the line
-            print(f"Validation batch {batch+1}/{expected_batches}: Loss = {loss.item():.4f}", end='\r')
+            if verbosity > 0:
+                print(200*" ", end='\r')  # Clear the line
+            if verbosity > -1:
+                print(f"Validation batch {batch+1}/{expected_batches}: Loss = {loss.item():.4f}", end='\r')
 
     if samples_seen == 0:
         raise ValueError("All samples were rejected.")
@@ -950,7 +967,8 @@ def validate_model(
     #        f"Validation loader yielded {samples_seen} samples, "
     #        f"but its dataset contains {len(val_loader.dataset)}."
     #    )
-    print(200*" ", end='\r')  # Clear the line
+    if verbosity > 0:
+        print(200*" ", end='\r')  # Clear the line
     val_loss /= samples_seen
     return val_loss
 
@@ -962,7 +980,9 @@ def predict(
     stds : tuple | None = None, 
     log_target : bool = False,
     norm_target : tuple | None = None,
-    variance_target : bool = False
+    variance_target : bool = False,
+    domain_input : bool | int = False,
+    verbosity : int = 1
 ) -> np.ndarray:
     """
     Predict using a trained PyTorch model on the provided test data loader.
@@ -993,12 +1013,17 @@ def predict(
         with torch.inference_mode():
             expected_batches = len(test_loader)
             for batch, data in enumerate(test_loader):
-                inputs, eventwise_features, _, _ = _tuple_unpack_to_device(data, device)
+                inputs, eventwise_features, _, domain = _tuple_unpack_to_device(data, device)
                 inputs = _normalize_inputs(inputs, means_i, stds_i)
                 eventwise_features = _normalize_inputs(eventwise_features, means_e, stds_e)
 
                 inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})  # Replace NaN values with 0.0
                 eventwise_features = torch.nan_to_num(eventwise_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
+                
+                if domain_input or isinstance(domain_input, int):
+                    if type(domain_input) == int:
+                        domain = torch.ones_like(domain) * domain_input
+                    eventwise_features = torch.column_stack((eventwise_features, domain.to(dtype=eventwise_features.dtype)))
 
                 outputs = _call_with_inputs(model, inputs, eventwise_features)
                 outputs = outputs.to(dtype=torch.float32)
@@ -1006,10 +1031,13 @@ def predict(
                 outputs = _prepare_predict_outputs(outputs, device, norm_target, log_target, variance_target)
 
                 predictions.append(outputs.cpu().numpy())
+                if verbosity > 0:
+                    print(200*" ", end='\r')  # Clear the line
+                    print(f"Prediction batch {batch+1}/{expected_batches}: Predictions shape = {outputs.shape}", end='\r')
+            if verbosity > 0:
                 print(200*" ", end='\r')  # Clear the line
-                print(f"Prediction batch {batch+1}/{expected_batches}: Predictions shape = {outputs.shape}", end='\r')
-            print(200*" ", end='\r')  # Clear the line
-            print("Prediction completed")
+            if verbosity > -1:
+                print("Prediction completed")
     finally:
         if dataset is not None and previous_skip_target_reads is not None:
             dataset.skip_target_reads = previous_skip_target_reads
@@ -1056,7 +1084,8 @@ def compressed_training_function(
     periodic_save_path : str | None = None,
     use_mask : bool | str = False,
     variance_target : torch.nn.Module | None = None,
-    z_pid : tuple[bool, str, str] = (False, "", "")
+    z_pid : tuple[bool, str, str] = (False, "", ""),
+    verbosity : int = 1
 ) -> tuple[torch.nn.Module, list, list]:
     train_size_egam = int((1 - validation_split) * len(h5_files))
     train_size_data = int((1 - validation_split) * len(mix_files))
@@ -1074,7 +1103,7 @@ def compressed_training_function(
         valid_fields = valid_fields,
     )
 
-    means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+    means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, verbosity=verbosity)
     
     if norm_target:
         if z_target:
@@ -1091,7 +1120,7 @@ def compressed_training_function(
                 valid_fields = valid_fields,
             )
             
-        norm_target = misc_functions.compute_target_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, log_target=log_target, z_target=z_target)
+        norm_target = misc_functions.compute_target_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, log_target=log_target, z_target=z_target, verbosity=verbosity)
 
 
 
@@ -1221,5 +1250,6 @@ def compressed_training_function(
                                            mask_model = mask_model,
                                            variance_target = variance_target,
                                            z_pid = (z_pid[0], type_model, isolation_model) if z_pid[0] else (False, None, None),
+                                           verbosity = verbosity
                                            )
     return model, train_losses, val_losses, means, stds, norm_target

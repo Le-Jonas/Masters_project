@@ -522,7 +522,8 @@ def _load_z_masses_from_files(z_masses_path : list[Path], dataloader_kwargs : di
     return np.concatenate(z_masses)
 
 
-def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 2048, num_workers : int = 4, pin_memory : bool = False, persistent_workers : bool = True) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
+
+def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 2048, num_workers : int = 4, pin_memory : bool = False, persistent_workers : bool = True, verbosity : int = 1) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
     """
     Given a dataset with two feature outputs and a target output and , compute the mean and standard deviation of its features for normalization. The computation is done using a random sample of the dataset to improve efficiency.
 
@@ -612,10 +613,12 @@ def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size 
         feature_sum_event += safe_event_features.sum(dim=0)
         feature_squared_sum_event += (safe_event_features ** 2).sum(dim=0)
         count_event += finite_event.sum(dim=0)
-        print(200*" ", end='\r')  # Clear the line
-        print(f"Calculating mean and std for normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
+        if verbosity > 0:
+            print(200*" ", end='\r')  # Clear the line
+            print(f"Calculating mean and std for normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
 
-    print(200*" ", end='\r')  # Clear the line
+    if verbosity > 0:
+        print(200*" ", end='\r')  # Clear the line
     means = feature_sum / count
     variances = feature_squared_sum / count - means ** 2
     stds = torch.sqrt(torch.clamp(variances, min=0))
@@ -638,7 +641,7 @@ def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size 
 
     return (means.float(), means_event.float()), (stds.float(), stds_event.float())
 
-def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 2048, num_workers : int = 4, pin_memory : bool = False, persistent_workers : bool = True, log_target : bool = False, z_target : bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 2048, num_workers : int = 4, pin_memory : bool = False, persistent_workers : bool = True, log_target : bool = False, z_target : bool = False, verbosity : int = 1) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Given a dataset with two feature outputs and a target output, compute the mean and standard deviation of its target for normalization. The computation is done using a random sample of the dataset to improve efficiency.
 
@@ -749,10 +752,12 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
         target_squared_sum += (safe_targets ** 2).sum(dim=0)
         count += finite.sum(dim=0)
 
-        print(200*" ", end='\r')  # Clear the line
-        print(f"Calculating mean and std for target normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
+        if verbosity > 0:
+            print(200*" ", end='\r')  # Clear the line
+            print(f"Calculating mean and std for target normalization using sample size {sample_size}, {start + batch_size} samples processed", end='\r')
 
-    print(200*" ", end='\r')  # Clear the line
+    if verbosity > 0:
+        print(200*" ", end='\r')  # Clear the line
     means = target_sum / count
     variances = target_squared_sum / count - means ** 2
     stds = torch.sqrt(torch.clamp(variances, min=0))
