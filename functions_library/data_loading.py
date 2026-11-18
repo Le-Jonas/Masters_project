@@ -447,7 +447,7 @@ def h5_to_npy(h5_file_path : str | Path,
     dataset.close()
     return 1
 
-def create_path_lists(paths : list[str], outputs : list[str] | None = None, seed : int = 0, mixing_list : list[tuple[int, int]] | None = None) -> tuple[list[Path], list[Path]]:
+def create_path_lists(paths : list[str], outputs : list[str] | None = None, seed : int = 0, mixing_list : list[tuple[int, int]] | None = None, mixing_lengths : list[tuple[int, int]] | None = None) -> tuple[list[Path], list[Path]]:
     rng = np.random.default_rng(seed=seed)
 
     path_num = len(paths)
@@ -469,7 +469,10 @@ def create_path_lists(paths : list[str], outputs : list[str] | None = None, seed
             else:
                 name1, name2 = outputs[idx1], outputs[idx2]
                 comb_name = outputs[path_num + i]
-            temp_list = path_dir[name1] + path_dir[name2]
+            if mixing_lengths:
+                temp_list = path_dir[name1][:mixing_lengths[i][0]] + path_dir[name2][:mixing_lengths[i][1]]
+            else:
+                temp_list = path_dir[name1] + path_dir[name2]
             rng.shuffle(temp_list)
             path_dir[comb_name] = temp_list
 

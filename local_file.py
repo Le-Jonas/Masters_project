@@ -18,26 +18,26 @@ def _train():
     base_string = f"C:/Users/jonas/{system_string}/Main/h5/"
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
-    valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    variables = ["origin"]
+    valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
+    variables = ["pt"]
 
     for variable in variables:
-        dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin"] else dataset_classes.H5EgammaDataset
-        nn_model = neural_models.ParticlePairNetwork if variable in ["z", "origin"] else neural_models.ParticleOriginNetwork
-        loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else torch.nn.MSELoss()
+        dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin", "origin-all"] else dataset_classes.H5EgammaDataset
+        nn_model = neural_models.ParticlePairNetwork if variable in ["z", "origin", "origin-all"] else neural_models.ParticleOriginNetwork
+        loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "origin-all", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else training_classes.logcosh_loss() if variable in ["pt", "z"] else torch.nn.MSELoss()
         if variable in ["pt", "eta", "phi"]:
             variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.GaussianVarianceNLLLoss()
 
-        field = ["truthOrigin"] if variable == "origin" else ["truthType", "passid_Loose"] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthType"], [variable, "passid_Tight"]]
+        field = [["truthOrigin", "pt", "eta", "phi"], ["passid_Loose", "pt", "eta", "phi"]] if variable in ["origin", "origin-all"] else [["truthType", "passid_VeryLoose"], ["passid_Medium", "passid_VeryLoose"]] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthType"], [variable, "passid_Tight"]]
         output_size = 1 #if variable in ["origin", "pt", "z"] else 2
 
-        binary_target = 13 if variable == "origin" else 2 if variable == "type" else 1 if variable == "isolation" else False
-        norm_target = True if variable in ["z", "pt", "origin"] else False
+        binary_target = 13 if variable in ["origin", "origin-all"] else 2 if variable == "type" else 1 if variable == "isolation" else False
+        norm_target = True if variable in ["origin"] else False
         z_target = True if variable == "z" else False
         log_target = False
-        use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi", "origin"] else False
+        use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
 
-        variable_name = "pair_" + variable if variable in ["z", "origin"] else variable
+        variable_name = "pair_" + variable if variable in ["z", "origin", "origin-all"] else variable
         if variable != "origin":
             model, train_losses, val_losses, _, _, _ = model_training.compressed_training_function(
                 h5_files = h5_files_egam,
@@ -64,13 +64,14 @@ def _train():
                 pin_memory = False,
                 num_epochs = 5,
                 sample_size = 1_000_000,
-                domain_adversary = True,
-                domain_loss_function = torch.nn.BCEWithLogitsLoss(),
-                domain_loss_weight = 0.05,
-                gradient_reversal_strength = 0.50,
-                mixed_target_loss_weight = 0.20,
+                #domain_adversary = True,
+                #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
+                #domain_loss_weight = 0.05,
+                #gradient_reversal_strength = 0.50,
+                mixed_target_loss_weight = 0.80,
+                domain_input = True,
                 domain = "bool",
-                periodic_save_interval = 4,
+                periodic_save_interval = 2,
                 periodic_save_path = f"./models_library/model_{variable_name}.pth",
                 use_mask = use_mask
             )
@@ -102,11 +103,12 @@ def _train():
                     pin_memory = False,
                     num_epochs = 5,
                     sample_size = 1_000_000,
-                    domain_adversary = True,
-                    domain_loss_function = torch.nn.BCEWithLogitsLoss(),
-                    domain_loss_weight = 0.05,
-                    gradient_reversal_strength = 0.50,
-                    mixed_target_loss_weight = 0.20,
+                    #domain_adversary = True,
+                    #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
+                    #domain_loss_weight = 0.05,
+                    #gradient_reversal_strength = 0.50,
+                    mixed_target_loss_weight = 0.80,
+                    domain_input = True,
                     domain = "bool",
                     periodic_save_interval = 2,
                     periodic_save_path = f"./models_library/model_{variable_name}_logvar.pth",
@@ -147,13 +149,14 @@ def _train():
                 z_target = z_target,
                 norm_target = norm_target,
                 pin_memory = False,
-                num_epochs = 10,
+                num_epochs = 5,
                 sample_size = 1_000_000,
-                domain_adversary = True,
-                domain_loss_function = torch.nn.BCEWithLogitsLoss(),
-                domain_loss_weight = 0.05,
-                gradient_reversal_strength = 0.50,
-                mixed_target_loss_weight = 0.10,
+                #domain_adversary = True,
+                #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
+                #domain_loss_weight = 0.05,
+                #gradient_reversal_strength = 0.50,
+                #mixed_target_loss_weight = 0.10,
+                domain_input = True,
                 periodic_save_interval = 2,
                 periodic_save_path = f"./models_library/model_{variable_name}.pth",
                 z_pid = (True, f"./models_library/model_type.pth", f"./models_library/model_isolation.pth")
@@ -183,8 +186,8 @@ def _write(a, b, c):
     csv_path = Path("./csv_library")
     csv_path.mkdir(parents=True, exist_ok=True)
 
-    valid_fields = {"egammas": ["pt", "eta", "phi", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    model_configs = {"z" : [False, True, False], "pt" : [False, True, False], "eta" : [False, False, False], "phi" : [False, False, False], "origin" : [False, False, False], "type" : [False, False, False], "isolation" : [False, False, False]}
+    valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
+    model_configs = {"z" : [False, False, False], "pt" : [False, False, False], "eta" : [False, False, False], "phi" : [False, False, False], "origin" : [False, False, False], "type" : [False, False, False], "isolation" : [False, False, False]}
     if a:
         data_loading.models_to_csv_files(
             models_path,
@@ -252,10 +255,10 @@ if __name__ == "__main__":
     from pathlib import Path
     from datetime import date
 
-    system_string = "Desktop/Masters" #Laptop path
-    #system_string = "Coding/Master" #Desktop path
+    #system_string = "Desktop/Masters" #Laptop path
+    system_string = "Coding/Master" #Desktop path
 
-    #_train()
+    _train()
     #_write(0, 0, 1)
-    _plot()
+    #_plot()
     print("Training and writing completed successfully.")

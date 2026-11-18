@@ -292,3 +292,41 @@ class AngularGaussianNLLLoss(_GaussianNLLBase):
             + log_variance
         )
         return self._reduce(losses)
+
+class logcosh_loss(torch.nn.Module):
+    def __init__(self, reduction: str = "mean"):
+        super().__init__()
+        if reduction not in {"none", "mean", "sum"}:
+            raise ValueError(
+                "reduction must be 'none', 'mean', or 'sum'."
+            )
+        self.reduction = reduction
+
+    def forward(
+        self,
+        outputs: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Computes the log-cosh loss.
+
+        Arguments:
+            outputs: A tensor of predicted values.
+            targets: A tensor of true target values.
+
+        Returns:
+            A scalar or per-sample tensor, depending on ``reduction``.
+        """
+        if torch.any(targets == 0):
+            outputs = outputs[targets != 0]
+            targets = targets[targets != 0]
+            if len(targets) == 0:
+                raise ValueError("Targets cannot all be zero.")
+        residual_ratio = (outputs - targets)/targets
+        losses = torch.log(torch.cosh(residual_ratio))
+        if self.reduction == "mean":
+            return losses.mean()
+        elif self.reduction == "sum":
+            return losses.sum()
+        return losses
+
