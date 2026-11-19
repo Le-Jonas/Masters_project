@@ -957,7 +957,6 @@ def validate_model(
             samples_seen += batch_size
             if verbosity > 0:
                 print(200*" ", end='\r')  # Clear the line
-            if verbosity > -1:
                 print(f"Validation batch {batch+1}/{expected_batches}: Loss = {loss.item():.4f}", end='\r')
 
     if samples_seen == 0:

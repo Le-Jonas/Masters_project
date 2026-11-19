@@ -62,7 +62,7 @@ def _train():
                 z_target = z_target,
                 norm_target = norm_target,
                 pin_memory = False,
-                num_epochs = 10,
+                num_epochs = 1,
                 sample_size = 1_000_000,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
@@ -77,7 +77,7 @@ def _train():
             )
             torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
 
-            if variable in ["pt", "eta", "phi"]:
+            if variable in ["pt", "eta", "phi"] and False:
                 model_var, train_losses_var, val_losses_var, _, _, _ = model_training.compressed_training_function(
                     h5_files = h5_files_egam,
                     mix_files = h5_files_data,

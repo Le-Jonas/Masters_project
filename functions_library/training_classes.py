@@ -405,17 +405,7 @@ class LogCoshLoss(torch.nn.Module):
             torch.zeros_like(outputs),
         )
         absolute_residual = residual_ratio.abs()
-        losses = (
-            absolute_residual
-            + F.softplus(-2.0 * absolute_residual)
-            - torch.log(
-                torch.as_tensor(
-                    2.0,
-                    dtype=outputs.dtype,
-                    device=outputs.device,
-                )
-            )
-        )
+        losses = (torch.log1p(absolute_residual))
         losses = torch.where(valid_targets, losses, torch.zeros_like(losses))
         if self.reduction == "mean":
             return losses.mean()
