@@ -255,7 +255,7 @@ def _prepare_z_targets(targets : torch.Tensor) -> torch.Tensor:
     z_mass = torch.sqrt(torch.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
     return z_mass
 
-def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_target: tuple | None, log_target: bool, variance_target: bool) -> torch.Tensor:
+def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_target: tuple | None, variance_target: bool) -> torch.Tensor:
     """
     Prepare the outputs of the model for prediction by applying inverse normalization and transformations based on the provided flags.
 
@@ -263,7 +263,6 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
     - outputs (torch.Tensor): The output tensor from the model.
     - device (torch.device): The device to move the outputs to.
     - norm_target (tuple or None): A tuple containing the mean and standard deviation for target normalization. If provided, the outputs will be denormalized.
-    - log_target (bool): Whether to apply an exponential transformation to the outputs to reverse a logarithmic transformation applied during training.
 
     Returns:
     - torch.Tensor: The prepared output tensor for prediction.
@@ -274,21 +273,159 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
             outputs = outputs + 2 * torch.log(std_t)
         else:
             outputs = outputs * std_t + mean_t
-        print("temp_error, using norm_target")
-
-    if log_target:
-        if variance_target:
-            raise ValueError("Cannot apply log_target transformation when variance_target is True. Log target is generally depreciated. I may fix it in the future.")
-            #outputs = torch.exp(outputs) * (std_t**2)
-        else:
-            outputs = torch.expm1(outputs)
-        print("temp_error, using log_target")
 
     elif variance_target:
         outputs = torch.exp(0.5 * outputs)
-        print("temp_error, using variance_target")
 
     return outputs
+
+def _prepare_training_inputs(data: tuple[torch.Tensor, ...], 
+                             device: torch.device, 
+                             means : tuple | None,
+                             stds : tuple | None,
+                             norm_target: tuple | None = None, 
+                             z_pid: tuple[bool, torch.nn.Module, torch.nn.Module] = (False, None, None),
+                             binary_value: int | None = None, 
+                             mask_model: torch.nn.Module | None = None, 
+                             z_target: bool = False, 
+                             domain_input: bool = False,
+                             verbosity: int = 1,
+                             domain: str = "bool",
+                             batch_numbers : tuple[int, int] = (0, 0)
+                             ) -> tuple:
+    inputs, eventwise_features, targets, domain_targets = _tuple_unpack_to_device(data, device)
+    means_i, means_e = means
+    stds_i, stds_e = stds
+    skip_batch = False
+
+    if z_pid[0]:
+        origin_inputs = targets[:, :, 4:]
+        pt_eta_phi = targets[:, :, 1:4]
+        targets = targets[:, :, 0]
+
+        z_masses = misc_functions._compute_z_mass(pt_eta_phi[:, 0, 0], pt_eta_phi[:, 0, 1], pt_eta_phi[:, 0, 2], pt_eta_phi[:, 1, 0], pt_eta_phi[:, 1, 1], pt_eta_phi[:, 1, 2])
+        z_mass_mask = abs(z_masses/1000.0 - 91.2) < 10.0
+        z_mass_mask = z_mass_mask.to(dtype=torch.float32)
+        targets[domain_targets == 1, 0], targets[domain_targets == 1, 1] = z_mass_mask[domain_targets == 1], z_mass_mask[domain_targets == 1]
+
+        mean_t, std_t = _move_to_device(norm_target, device)
+        mean_t, std_t = mean_t[4:-1], std_t[4:-1]
+
+    elif mask_model is not None:
+        if targets.ndim != 2 or targets.shape[-1] < 2:
+            raise ValueError(
+                "mask_model requires at least two target columns: "
+                "[physics_target, mask_target]."
+            )
+        mask_targets = targets[:, -1]
+        targets = targets[:, :-1]
+        if targets.shape[-1] == 1:
+            targets = targets.reshape(-1)
+
+    if not torch.isfinite(targets).all():
+        raise ValueError(f"Warning: Non-finite values detected in targets")
+    if z_target:
+        targets = _prepare_z_targets(targets)
+
+    if (binary_value == 13) & (domain_targets is not None) & (not z_pid[0]):
+        pt_eta_phi = targets[:, :, 1:4]
+        targets = targets[:, :, 0]
+        targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
+
+        z_masses = misc_functions._compute_z_mass(pt_eta_phi[:, 0, 0], pt_eta_phi[:, 0, 1], pt_eta_phi[:, 0, 2], pt_eta_phi[:, 1, 0], pt_eta_phi[:, 1, 1], pt_eta_phi[:, 1, 2])
+        z_mass_mask = (abs(z_masses/1000.0 - 91.2) < 50.0) | (abs(z_masses/1000.0 - 91.2) > 10.0) | (domain_targets == 0)
+
+        inputs = inputs[0][z_mass_mask], inputs[1][z_mass_mask]
+        targets = targets[z_mass_mask]
+        domain_targets = domain_targets[z_mass_mask]
+        eventwise_features = eventwise_features[z_mass_mask]
+        z_masses = z_masses[z_mass_mask]
+    
+        z_mask_1 = (abs(z_masses/1000.0 - 91.2) < 10.0) & (domain_targets == 1)
+        z_mask_0 = (abs(z_masses/1000.0 - 91.2) > 50.0) & (domain_targets == 1)
+
+        targets[z_mask_1] = targets[z_mask_1] * 1.0
+        targets[z_mask_0] = targets[z_mask_0] * 0.0
+    elif (binary_value == 2) & (domain_targets is not None):
+        passid_loose = targets[:, 1]
+        targets = targets[:, 0]
+        targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
+
+        id_mask = (targets > 0.5) | (passid_loose < 0.5) | (domain_targets == 0)
+
+        inputs = inputs[id_mask]
+        targets = targets[id_mask]
+        domain_targets = domain_targets[id_mask]
+        eventwise_features = eventwise_features[id_mask]
+        passid_loose = passid_loose[id_mask]
+    
+        id_mask_1 = (targets > 0.5) & (domain_targets == 1)
+        id_mask_0 = (passid_loose < 0.5) & (domain_targets == 1)
+
+        targets[id_mask_1] = targets[id_mask_1] * 1.0
+        targets[id_mask_0] = targets[id_mask_0] * 0.0
+
+    elif binary_value:
+        targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
+    if norm_target and not z_pid[0]:
+        mean_t, std_t = _move_to_device(norm_target, device)
+        if mask_model is not None:
+            mean_t, std_t = mean_t[0], std_t[0]
+        targets = (targets - mean_t) / std_t
+    if targets.shape[-1] == 1:
+        targets = targets.reshape(-1)
+
+
+    inputs = _normalize_inputs(inputs, means_i, stds_i)
+    eventwise_features = _normalize_inputs(eventwise_features, means_e, stds_e)
+    inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})
+    eventwise_features = torch.nan_to_num(eventwise_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
+
+    if domain_input:
+        eventwise_features = torch.column_stack((eventwise_features, domain_targets.to(dtype=eventwise_features.dtype)))
+
+    if z_pid[0]:
+        origin_inputs = _normalize_inputs(origin_inputs, mean_t, std_t)
+        origin_inputs = _function_on_inputs(torch.nan_to_num, origin_inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})
+
+        type_inputs = (_call_with_inputs(z_pid[1], inputs[0], eventwise_features) / 8.0, _call_with_inputs(z_pid[1], inputs[1], eventwise_features) / 8.0)
+        isolation_inputs = (_call_with_inputs(z_pid[2], inputs[0], eventwise_features) / 8.0, _call_with_inputs(z_pid[2], inputs[1], eventwise_features) / 8.0)
+        inputs = (torch.column_stack((origin_inputs[0], type_inputs[0], isolation_inputs[0])), torch.column_stack((origin_inputs[1], type_inputs[1], isolation_inputs[1])))
+
+    elif mask_model is not None:
+        mask = _predict_mask(mask_model, inputs, eventwise_features)
+        if mask.sum() == 0:
+            target_mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
+            target_mask = target_mask.to(dtype=torch.bool)
+            if verbosity > 0 and batch_numbers[1] > 0:
+                print(200*" ", end='\r')  # Clear the line
+                print(f"Validation batch {batch_numbers[0]+1}/{batch_numbers[1]}: No valid samples from prediction, {target_mask.sum()} valid samples from truth", end='\r')
+            skip_batch = True
+
+        mask_targets = mask_targets[mask]
+        if domain_targets is not None:
+            domain_targets = domain_targets[mask]
+
+        target_mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
+        target_mask = target_mask.to(dtype=torch.bool)
+        if target_mask.sum() == 0:
+            if verbosity > 0 and batch_numbers[1] > 0:
+                print(200*" ", end='\r')  # Clear the line
+                print(f"Validation batch {batch_numbers[0]+1}/{batch_numbers[1]}: No valid samples from truth, {mask.sum()} valid samples from prediction", end='\r')
+            skip_batch = True
+
+        targets = targets[mask][target_mask]
+
+        if domain_targets is not None:
+            domain_targets = domain_targets[target_mask]
+
+        if isinstance(inputs, tuple):
+            inputs = (inputs[0][mask][target_mask], inputs[1][mask][target_mask])
+        else:
+            inputs = inputs[mask][target_mask]
+        eventwise_features = eventwise_features[mask][target_mask]
+
+    return inputs, eventwise_features, targets, domain_targets, skip_batch
 
 def train_model(
         model : torch.nn.Module, 
@@ -300,7 +437,6 @@ def train_model(
         device : str | torch.device = 'cpu', 
         means : tuple | None = None,
         stds : tuple | None = None, 
-        log_target : bool = False, 
         binary_target : bool | float = False,
         z_target : bool = False,
         norm_target : tuple | None = None,
@@ -335,7 +471,6 @@ def train_model(
     - device (str or torch.device): The device to use for training (e.g., 'cpu' or 'cuda'). Default is 'cpu'.
     - means (tuple): A tuple containing the means for input normalization. Default is None.
     - stds (tuple): A tuple containing the standard deviations for input normalization. Default is None.
-    - log_target (bool): Whether to apply a logarithmic transformation to the target values to smoothen loss function values. Default is False.
     - binary_target (bool or float): Whether to convert the target values to a binary format. If a float is provided, it will be used as the value to consider as the positive class (1.0). Default is False.
     - domain_adversary (torch.nn.Module, optional): Domain classifier applied
       to the model embedding. Default is None.
@@ -424,148 +559,9 @@ def train_model(
         samples_seen = 0
         expected_batches = len(train_loader)
         for batch, data in enumerate(train_loader):
-            inputs, eventwise_features, targets, domain_targets = _tuple_unpack_to_device(data, device)
-            if z_pid[0]:
-                #mask_targets = targets[:, :, -1]
-                origin_inputs = targets[:, :, 4:-1]
-                pt_eta_phi = targets[:, :, 1:4]
-                targets = targets[:, :, 0]
-
-                z_masses = misc_functions._compute_z_mass(pt_eta_phi[:, 0, 0], pt_eta_phi[:, 0, 1], pt_eta_phi[:, 0, 2], pt_eta_phi[:, 1, 0], pt_eta_phi[:, 1, 1], pt_eta_phi[:, 1, 2])
-                z_mass_mask = abs(z_masses/1000.0 - 91.2) < 10.0
-                z_mass_mask = z_mass_mask.to(dtype=torch.float32)
-                targets[domain_targets == 1, 0], targets[domain_targets == 1, 1] = z_mass_mask[domain_targets == 1], z_mass_mask[domain_targets == 1]
-
-                mean_t, std_t = _move_to_device(norm_target, device)
-                mean_t, std_t = mean_t[4:-1], std_t[4:-1]
-
-            elif mask_model is not None:
-                mask_targets = targets[:, -1]
-                targets = targets[:, :-1]
-                if targets.shape[-1] == 1:
-                    targets = targets.reshape(-1)
-
-            if not torch.isfinite(targets).all():
-                raise ValueError(f"Warning: Non-finite values detected in targets")
-            if z_target:
-                targets = _prepare_z_targets(targets)
-            if log_target:
-                targets = torch.log1p(targets)  # Add 1 to avoid log(0)
-            if (binary_target == 13) & (domain_targets is not None) & (not z_pid[0]):
-                pt_eta_phi = targets[:, :, 1:4]
-                targets = targets[:, :, 0]
-                targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
-
-                z_masses = misc_functions._compute_z_mass(pt_eta_phi[:, 0, 0], pt_eta_phi[:, 0, 1], pt_eta_phi[:, 0, 2], pt_eta_phi[:, 1, 0], pt_eta_phi[:, 1, 1], pt_eta_phi[:, 1, 2])
-                z_mass_mask = (abs(z_masses/1000.0 - 91.2) < 50.0) | (abs(z_masses/1000.0 - 91.2) > 10.0) | (domain_targets == 0)
-
-                inputs = inputs[0][z_mass_mask], inputs[1][z_mass_mask]
-                targets = targets[z_mass_mask]
-                domain_targets = domain_targets[z_mass_mask]
-                eventwise_features = eventwise_features[z_mass_mask]
-                z_masses = z_masses[z_mass_mask]
-    
-                z_mask_1 = (abs(z_masses/1000.0 - 91.2) < 10.0) & (domain_targets == 1)
-                z_mask_0 = (abs(z_masses/1000.0 - 91.2) > 50.0) & (domain_targets == 1)
-
-                targets[z_mask_1] = targets[z_mask_1] * 1.0
-                targets[z_mask_0] = targets[z_mask_0] * 0.0
-            elif (binary_target == 2) & (domain_targets is not None):
-                passid_loose = targets[:, 1]
-                targets = targets[:, 0]
-                targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
-
-                id_mask = (targets > 0.5) | (passid_loose < 0.5) | (domain_targets == 0)
-
-                inputs = inputs[id_mask]
-                targets = targets[id_mask]
-                domain_targets = domain_targets[id_mask]
-                eventwise_features = eventwise_features[id_mask]
-                passid_loose = passid_loose[id_mask]
-    
-                id_mask_1 = (targets > 0.5) & (domain_targets == 1)
-                id_mask_0 = (passid_loose < 0.5) & (domain_targets == 1)
-
-                targets[id_mask_1] = targets[id_mask_1] * 1.0
-                targets[id_mask_0] = targets[id_mask_0] * 0.0
-
-            elif binary_target:
-                targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
-            if norm_target and not z_pid[0]:
-                mean_t, std_t = _move_to_device(norm_target, device)
-                if mask_model is not None:
-                    mean_t, std_t = mean_t[0], std_t[0]
-                targets = (targets - mean_t) / std_t
-            if targets.shape[-1] == 1:
-                targets = targets.reshape(-1)
-
-
-            inputs = _normalize_inputs(inputs, means_i, stds_i)
-            eventwise_features = _normalize_inputs(eventwise_features, means_e, stds_e)
-            inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})
-            eventwise_features = torch.nan_to_num(eventwise_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
-
-            if domain_input:
-                eventwise_features = torch.column_stack((eventwise_features, domain_targets.to(dtype=eventwise_features.dtype)))
-
-            if z_pid[0]:
-                #mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
-                #if mask.sum() == 0:
-                #    print(200*" ", end='\r')  # Clear the line
-                #    print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from truth", end='\r')
-                #    continue
-                #mask = mask.to(dtype=torch.bool)
-                
-                mask = torch.tensor([True] * targets.shape[0], dtype=torch.bool, device=device)  # Initialize mask with all True values
-
-                inputs = (inputs[0][mask], inputs[1][mask])
-                origin_inputs = (origin_inputs[:, 0][mask], origin_inputs[:, 1][mask])
-                eventwise_features = eventwise_features[mask]
-                targets = targets[mask]
-                domain_targets = domain_targets[mask] if domain_targets is not None else None
-
-                origin_inputs = _normalize_inputs(origin_inputs, mean_t, std_t)
-                origin_inputs = _function_on_inputs(torch.nan_to_num, origin_inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})
-
-                type_inputs = (_call_with_inputs(z_pid[1], inputs[0], eventwise_features) / 8.0, _call_with_inputs(z_pid[1], inputs[1], eventwise_features) / 8.0)
-                isolation_inputs = (_call_with_inputs(z_pid[2], inputs[0], eventwise_features) / 8.0, _call_with_inputs(z_pid[2], inputs[1], eventwise_features) / 8.0)
-                inputs = (torch.column_stack((origin_inputs[0], type_inputs[0], isolation_inputs[0])), torch.column_stack((origin_inputs[1], type_inputs[1], isolation_inputs[1])))
-
-
-
-
-            elif mask_model is not None:
-                mask = _predict_mask(mask_model, inputs, eventwise_features)
-                if mask.sum() == 0:
-                    target_mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
-                    target_mask = target_mask.to(dtype=torch.bool)
-                    if verbosity > 0:
-                        print(200*" ", end='\r')  # Clear the line
-                        print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from prediction, {target_mask.sum()} valid samples from truth", end='\r')
-                    continue
-
-                mask_targets = mask_targets[mask]
-                if domain_targets is not None:
-                    domain_targets = domain_targets[mask]
-
-                target_mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
-                target_mask = target_mask.to(dtype=torch.bool)
-                if target_mask.sum() == 0:
-                    if verbosity > 0:
-                        print(200*" ", end='\r')  # Clear the line
-                        print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from truth, {mask.sum()} valid samples from prediction", end='\r')
-                    continue
-
-                targets = targets[mask][target_mask]
-
-                if domain_targets is not None:
-                    domain_targets = domain_targets[target_mask]
-
-                if isinstance(inputs, tuple):
-                    inputs = (inputs[0][mask][target_mask], inputs[1][mask][target_mask])
-                else:
-                    inputs = inputs[mask][target_mask]
-                eventwise_features = eventwise_features[mask][target_mask]
+            inputs, eventwise_features, targets, domain_targets, skip_batch = _prepare_training_inputs(data, device, (means_i, means_e), (stds_i, stds_e), norm_target = norm_target, z_pid = z_pid, binary_value = binary_value, mask_model = mask_model, z_target = z_target, domain_input = domain_input, verbosity = verbosity, domain = domain, batch_numbers = (batch, expected_batches))
+            if skip_batch:
+                continue
 
             optimizer.zero_grad()
             outputs = _call_with_inputs(model, inputs, eventwise_features)
@@ -641,7 +637,6 @@ def train_model(
             device,
             means,
             stds,
-            log_target=log_target,
             binary_target=binary_target,
             domain_adversary=domain_adversary,
             domain_loss_function=domain_loss_function,
@@ -696,7 +691,6 @@ def validate_model(
         device : str | torch.device = 'cpu', 
         means : tuple | None = None, 
         stds : tuple | None = None, 
-        log_target : bool = False, 
         binary_target : bool | float = False,
         domain : str = "bool",
         domain_adversary : torch.nn.Module | None = None,
@@ -724,7 +718,6 @@ def validate_model(
     - device (str or torch.device): The device to use for validation (e.g., 'cpu' or 'cuda'). Default is 'cpu'.
     - means (tuple): A tuple containing the means for input normalization. Default is None.
     - stds (tuple): A tuple containing the standard deviations for input normalization. Default is None.
-    - log_target (bool): Whether to apply a logarithmic transformation to the target values to smoothen loss function values. Default is False.
     - binary_target (bool or float): Whether to convert the target values to a binary format. If a float is provided, it will be used as the value to consider as the positive class (1.0). Default is False.
     - domain_adversary (torch.nn.Module, optional): Domain classifier applied
       to the model embedding. Default is None.
@@ -768,148 +761,9 @@ def validate_model(
     with torch.no_grad():
         expected_batches = len(val_loader)
         for batch, data in enumerate(val_loader):
-            inputs, eventwise_features, targets, domain_targets = _tuple_unpack_to_device(data, device)
-            if z_pid[0]:
-                mask_targets = targets[:, :, -1]
-                origin_inputs = targets[:, :, 4:-1]
-                pt_eta_phi = targets[:, :, 1:4]
-                targets = targets[:, :, 0]
-
-                z_masses = misc_functions._compute_z_mass(pt_eta_phi[:, 0, 0], pt_eta_phi[:, 0, 1], pt_eta_phi[:, 0, 2], pt_eta_phi[:, 1, 0], pt_eta_phi[:, 1, 1], pt_eta_phi[:, 1, 2])
-                z_mass_mask = (z_masses/1000.0 - 91.2) < 10.0
-                z_mass_mask = z_mass_mask.to(dtype=torch.float32)
-                targets[domain_targets == 1, 0], targets[domain_targets == 1, 1] = z_mass_mask[domain_targets == 1], z_mass_mask[domain_targets == 1]
-
-                mean_t, std_t = _move_to_device(norm_target, device)
-                mean_t, std_t = mean_t[4:-1], std_t[4:-1]
-
-            elif mask_model is not None:
-                mask_targets = targets[:, -1]
-                targets = targets[:, :-1]
-                if targets.shape[-1] == 1:
-                    targets = targets.reshape(-1)
-
-            if z_target:
-                targets = _prepare_z_targets(targets)
-            if log_target:
-                targets = torch.log1p(targets)
-
-            if (binary_target == 13) & (domain_targets is not None) & (not z_pid[0]):
-                pt_eta_phi = targets[:, :, 1:4]
-                targets = targets[:, :, 0]
-                targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
-
-                z_masses = misc_functions._compute_z_mass(pt_eta_phi[:, 0, 0], pt_eta_phi[:, 0, 1], pt_eta_phi[:, 0, 2], pt_eta_phi[:, 1, 0], pt_eta_phi[:, 1, 1], pt_eta_phi[:, 1, 2])
-                z_mass_mask = (abs(z_masses/1000.0 - 91.2) < 50.0) | (abs(z_masses/1000.0 - 91.2) > 10.0) | (domain_targets == 0)
-
-                inputs = inputs[0][z_mass_mask], inputs[1][z_mass_mask]
-                targets = targets[z_mass_mask]
-                domain_targets = domain_targets[z_mass_mask]
-                eventwise_features = eventwise_features[z_mass_mask]
-                z_masses = z_masses[z_mass_mask]
-    
-                z_mask_1 = (abs(z_masses/1000.0 - 91.2) < 10.0) & (domain_targets == 1)
-                z_mask_0 = (abs(z_masses/1000.0 - 91.2) > 50.0) & (domain_targets == 1)
-
-                targets[z_mask_1] = targets[z_mask_1] * 1.0
-                targets[z_mask_0] = targets[z_mask_0] * 0.0
-
-            elif (binary_target == 2) & (domain_targets is not None):
-                passid_loose = targets[:, 1]
-                targets = targets[:, 0]
-                targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
-
-                id_mask = (targets > 0.5) | (passid_loose < 0.5) | (domain_targets == 0)
-
-                inputs = inputs[id_mask]
-                targets = targets[id_mask]
-                domain_targets = domain_targets[id_mask]
-                eventwise_features = eventwise_features[id_mask]
-                passid_loose = passid_loose[id_mask]
-    
-                id_mask_1 = (targets > 0.5) & (domain_targets == 1)
-                id_mask_0 = (passid_loose < 0.5) & (domain_targets == 1)
-
-                targets[id_mask_1] = targets[id_mask_1] * 1.0
-                targets[id_mask_0] = targets[id_mask_0] * 0.0
-
-            elif binary_target:
-                targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
-            if norm_target and not z_pid[0]:
-                mean_t, std_t = _move_to_device(norm_target, device)
-                if mask_model is not None:
-                    mean_t, std_t = mean_t[0], std_t[0]
-                targets = (targets - mean_t) / std_t
-            if targets.shape[-1] == 1:
-                targets = targets.reshape(-1)
-
-            if not torch.isfinite(targets).all():
-                raise ValueError(f"Warning: Non-finite values detected in targets")
-            inputs = _normalize_inputs(inputs, means_i, stds_i)
-            eventwise_features = _normalize_inputs(eventwise_features, means_e, stds_e)
-
-            inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})
-            eventwise_features = torch.nan_to_num(eventwise_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
-
-            if domain_input:
-                eventwise_features = torch.column_stack((eventwise_features, domain_targets.to(dtype=eventwise_features.dtype)))
-
-            if z_pid[0]:
-                #mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
-                #if mask.sum() == 0:
-                #    print(200*" ", end='\r')  # Clear the line
-                #    print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from truth", end='\r')
-                #    continue
-                #mask = mask.to(dtype=torch.bool)
-                
-                mask = torch.tensor([True] * targets.shape[0], dtype=torch.bool, device=device)  # Initialize mask with all True values
-
-                inputs = (inputs[0][mask], inputs[1][mask])
-                origin_inputs = (origin_inputs[:, 0][mask], origin_inputs[:, 1][mask])
-                eventwise_features = eventwise_features[mask]
-                targets = targets[mask]
-                domain_targets = domain_targets[mask] if domain_targets is not None else None
-
-                origin_inputs = _normalize_inputs(origin_inputs, mean_t, std_t)
-                origin_inputs = _function_on_inputs(torch.nan_to_num, origin_inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})
-
-                type_inputs = (_call_with_inputs(z_pid[1], inputs[0], eventwise_features) / 8.0, _call_with_inputs(z_pid[1], inputs[1], eventwise_features) / 8.0)
-                isolation_inputs = (_call_with_inputs(z_pid[2], inputs[0], eventwise_features) / 8.0, _call_with_inputs(z_pid[2], inputs[1], eventwise_features) / 8.0)
-                inputs = (torch.column_stack((origin_inputs[0], type_inputs[0], isolation_inputs[0])), torch.column_stack((origin_inputs[1], type_inputs[1], isolation_inputs[1])))
-
-
-            elif mask_model is not None:
-                mask = _predict_mask(mask_model, inputs, eventwise_features)
-                if mask.sum() == 0:
-                    target_mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
-                    target_mask = target_mask.to(dtype=torch.bool)
-                    if verbosity > 0:
-                        print(200*" ", end='\r')  # Clear the line
-                        print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from prediction, {target_mask.sum()} valid samples from truth", end='\r')
-                    continue
-
-                mask_targets = mask_targets[mask]
-
-                if domain_targets is not None:
-                    domain_targets = domain_targets[mask]
-
-                target_mask = _prepare_binary_targets(mask_targets, domain_targets, 2, domain = domain)
-                target_mask = target_mask.to(dtype=torch.bool)
-                if target_mask.sum() == 0:
-                    if verbosity > 0:
-                        print(200*" ", end='\r')  # Clear the line
-                        print(f"Validation batch {batch+1}/{expected_batches}: No valid samples from truth, {mask.sum()} valid samples from prediction", end='\r')
-                    continue
-                targets = targets[mask][target_mask]
-
-                if domain_targets is not None:
-                    domain_targets = domain_targets[target_mask]
-
-                if isinstance(inputs, tuple):
-                    inputs = (inputs[0][mask][target_mask], inputs[1][mask][target_mask])
-                else:
-                    inputs = inputs[mask][target_mask]
-                eventwise_features = eventwise_features[mask][target_mask]
+            inputs, eventwise_features, targets, domain_targets, skip_batch = _prepare_training_inputs(data, device, (means_i, means_e), (stds_i, stds_e), norm_target = norm_target, z_pid = z_pid, binary_value = binary_value, mask_model = mask_model, z_target = z_target, domain_input = domain_input, verbosity = verbosity, domain = domain, batch_numbers = (batch, expected_batches))
+            if skip_batch:
+                continue
             
             outputs = _call_with_inputs(model, inputs, eventwise_features)
             targets = targets.to(dtype=outputs.dtype)
@@ -977,7 +831,6 @@ def predict(
     device : str | torch.device = 'cpu', 
     means : tuple | None = None, 
     stds : tuple | None = None, 
-    log_target : bool = False,
     norm_target : tuple | None = None,
     variance_target : bool = False,
     domain_input : bool | int = False,
@@ -994,7 +847,6 @@ def predict(
     - device (str or torch.device): The device to use for prediction (e.g., 'cpu' or 'cuda'). Default is 'cpu'.
     - means (tuple): A tuple containing the means for input normalization. Default is None.
     - stds (tuple): A tuple containing the standard deviations for input normalization. Default is None.
-    - log_target (bool): Whether a logarithmic transformation was applied to the target values during training to smoothen loss function values. Default is False.
     
     Returns:
     - predictions (numpy.ndarray): An array of predicted values.
@@ -1027,7 +879,7 @@ def predict(
                 outputs = _call_with_inputs(model, inputs, eventwise_features)
                 outputs = outputs.to(dtype=torch.float32)
 
-                outputs = _prepare_predict_outputs(outputs, device, norm_target, log_target, variance_target)
+                outputs = _prepare_predict_outputs(outputs, device, norm_target, variance_target)
 
                 predictions.append(outputs.cpu().numpy())
                 if verbosity > 0:
@@ -1071,7 +923,6 @@ def compressed_training_function(
     mixed_target_loss_weight : float = 0.20,
     domain_input : bool = False,
     binary_target : bool | float = False,
-    log_target : bool = False,
     validation_split : float = 0.25,
     sample_size : int = 1000000,
     use_old_model : torch.nn.Module | bool = False,
@@ -1119,7 +970,7 @@ def compressed_training_function(
                 valid_fields = valid_fields,
             )
             
-        norm_target = misc_functions.compute_target_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, log_target=log_target, z_target=z_target, verbosity=verbosity)
+        norm_target = misc_functions.compute_target_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, z_target=z_target, verbosity=verbosity)
 
 
 
@@ -1233,7 +1084,6 @@ def compressed_training_function(
                                            means=means, 
                                            stds=stds, 
                                            binary_target=binary_target, 
-                                           log_target=log_target,
                                            domain_adversary = domain_adversary, 
                                            gradient_reversal = gradient_reversal,
                                            domain_loss_function = domain_loss_function, 

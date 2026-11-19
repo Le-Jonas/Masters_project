@@ -260,16 +260,12 @@ def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Modu
         print(f"Predicting {var} for Z mass calculation...")
         if var not in models.keys():
             raise ValueError(f"Model for variable '{var}' is missing in the provided models dictionary.")
-        if var in ["pt", "e"]:
-            log_target = True
-        else:
-            log_target = False
 
         needed_means = np.concatenate(means[:loc], means[loc+1:])
         needed_stds = np.concatenate(stds[:loc], stds[loc+1:])
         dataset = H5EgammaDatasetWrapper(parent_dataset, exclude_fields = {"egammas": [var]}, y_field = var, y_source = "truth", fallback_source = "egammas", valid_fields = valid_fields)
         loader = DataLoader(dataset, **dataloader_kwargs)
-        prediction_dict[var] = predict(models[var], loader, device, means=needed_means, stds=needed_stds, log_target=log_target)
+        prediction_dict[var] = predict(models[var], loader, device, means=needed_means, stds=needed_stds)
 
     parent_dataset.close()
 
@@ -641,7 +637,7 @@ def compute_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size 
 
     return (means.float(), means_event.float()), (stds.float(), stds_event.float())
 
-def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 2048, num_workers : int = 4, pin_memory : bool = False, persistent_workers : bool = True, log_target : bool = False, z_target : bool = False, verbosity : int = 1) -> tuple[torch.Tensor, torch.Tensor]:
+def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batch_size : int = 2048, num_workers : int = 4, pin_memory : bool = False, persistent_workers : bool = True, z_target : bool = False, verbosity : int = 1) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Given a dataset with two feature outputs and a target output, compute the mean and standard deviation of its target for normalization. The computation is done using a random sample of the dataset to improve efficiency.
 
@@ -735,8 +731,6 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
                 "For ZPairDataset targets with shape [batch, 2, 4], "
                 "call it with z_target=True."
             )
-        if log_target:
-            targets = torch.log1p(targets)
 
         start = batch_number * batch_size
 

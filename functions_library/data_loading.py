@@ -727,9 +727,9 @@ def models_to_csv_files(models_path : Path | str,
 
         try:
             config_tuple = model_configs[name_parts[-1]]
-            log_target, norm_target, variance_target = config_tuple
+            norm_target, variance_target = config_tuple
         except KeyError:
-            log_target, norm_target, variance_target = False, False, False
+            norm_target, variance_target = False, False
 
         if name_parts[-1] == "logvar":
             variance_target = True
@@ -749,7 +749,7 @@ def models_to_csv_files(models_path : Path | str,
                 fallback_source = "egammas",
                 y_field = [name_parts[-1]]
             )
-            norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=1_000_000, batch_size=batch_size, log_target=log_target, num_workers=num_workers, pin_memory=pin_memory)
+            norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=1_000_000, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
         elif norm_target:
             norm_dataset = _class_.ZPairDataset(
                 files=h5_egam_files,
@@ -763,14 +763,14 @@ def models_to_csv_files(models_path : Path | str,
                 fallback_source = "egammas",
                 y_field = ["pt", "eta", "phi"]
             )
-            norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=500_000, batch_size=batch_size, log_target=log_target, z_target=True, num_workers=num_workers, pin_memory=pin_memory)
+            norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=500_000, batch_size=batch_size, z_target=True, num_workers=num_workers, pin_memory=pin_memory)
 
         if name_parts[-1] != "origin":
             mc_loader = DataLoader(mc_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
             data_loader = DataLoader(data_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
-            mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target, domain_input=0)
-            data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, log_target=log_target, norm_target=norm_target, variance_target=variance_target, domain_input=1)
+            mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, domain_input=0)
+            data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, domain_input=1)
             np.savetxt(csv_mc_file, mc_predictions[:max_rows], delimiter=",")
             np.savetxt(csv_data_file, data_predictions[:max_rows], delimiter=",")
 

@@ -35,7 +35,6 @@ def _train():
         binary_target = 13 if variable in ["origin", "origin-all"] else 2 if variable == "type" else 1 if variable == "isolation" else False
         norm_target = True if variable in ["origin"] else False
         z_target = True if variable == "z" else False
-        log_target = False
         use_mask = "../Masters_project/models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
 
         variable_name = "pair_" + variable if variable in ["z", "origin", "origin-all"] else variable
@@ -58,7 +57,6 @@ def _train():
                 fallback_source = "egammas",
                 fallback_field = field[1],
                 valid_fields = valid_fields,
-                log_target = log_target,
                 binary_target = binary_target,
                 z_target = z_target,
                 norm_target = norm_target,
@@ -98,7 +96,6 @@ def _train():
                     fallback_source = "egammas",
                     fallback_field = field[1],
                     valid_fields = valid_fields,
-                    log_target = log_target,
                     binary_target = binary_target,
                     z_target = z_target,
                     norm_target = norm_target,
@@ -144,10 +141,9 @@ def _train():
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
                 y_source = "egammas",
-                y_field = ["truthOrigin", "pt", "eta", "phi", "z0", "d0", "sig_z0", "truthType"],
-                fallback_field = ["passid_Loose", "pt", "eta", "phi", "z0", "d0", "sig_z0", "passid_Tight"],
+                y_field = ["truthOrigin", "pt", "eta", "phi", "z0", "sig_z0"],
+                fallback_field = ["passid_Loose", "pt", "eta", "phi", "z0", "sig_z0"],
                 valid_fields = valid_fields,
-                log_target = log_target,
                 binary_target = binary_target,
                 z_target = z_target,
                 norm_target = norm_target,
@@ -177,6 +173,7 @@ def _train():
         plt.legend()
         misc_functions.save_plot(f"../Masters_project/plots/{date.today()}/loss_plot_{variable_name}.png", fig)
         plt.close()
+    print("Training completed successfully.")
 
 def _write(a, b, c):
     base_string = "/groups/hep/morancho/ATLAS_Open_Data/Zee_Analysis/h5/"
@@ -231,6 +228,7 @@ def _write(a, b, c):
             pin_memory = False,
             max_rows = 1_000_000,
             )
+    print("Writing completed successfully.")
 
 def _plot():
     base_string = f"/groups/hep/wrt770/Master_Project/git_shared/Masters_project"
@@ -249,6 +247,128 @@ def _plot():
     
     print(f"N_tp and N_fp for the cut threshold: {N_cut_true}, {N_cut_fit_mc}, {N_cut_fit_data}")
     print(f"N_tp and N_fp for the pseudo-roc curve: {N_pred_true}, {N_pred_fit_mc}, {N_pred_fit_data}")
+    print("Plotting completed successfully.")
+
+def _test(test_length: int):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    base_string = "/groups/hep/morancho/ATLAS_Open_Data/Zee_Analysis/h5/"
+    h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
+    h5_files_data = h5_files_data[:20]
+
+    batch_size = 4096
+    num_workers = 7
+    pin_memory = True
+    persistent_workers = True
+    model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : 1}
+    valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
+    mask_model_path = "../Masters_project/models_library/model_type.pth"
+    mixed_target_loss_weight = 0.80
+
+    test_dataset = dataset_classes.H5EgammaDataset(
+        h5_files_egam,
+        mix_files = h5_files_data,
+        mixture_ratio = 0.66,
+        exclude_features = ["truth"],
+        exclude_fields = valid_fields,
+        y_source = "truth",
+        y_field = ["pt"],
+        fallback_source = "egammas",
+        valid_fields = valid_fields,
+    )
+
+    means, stds = misc_functions.compute_mean_std(test_dataset, sample_size=100_000, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, verbosity=0)
+    sampler = data_loading.ShuffledContiguousBatchSampler(len(test_dataset), batch_size=batch_size, dataset=test_dataset, discard_remainder=True)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_sampler = sampler, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers)
+
+    particle_fields = [field for field in test_dataset.fields if not field.startswith("eventwise_")]
+    event_fields = [field for field in test_dataset.fields if field.startswith("eventwise_")]
+
+    event_size = len(event_fields) + 1
+    particle_size = len(particle_fields)
+    embedding_size = model_kwargs["particle_hidden_sizes"][-1] + model_kwargs["event_hidden_sizes"][-1]
+
+    model = neural_models.ParticleOriginNetwork(
+        particle_size,
+        event_size,
+        **model_kwargs
+    ).to(device)
+
+    mask_model = neural_models.ParticleOriginNetwork(
+        particle_size,
+        event_size,
+        **model_kwargs
+    ).to(device)
+    mask_model.load_state_dict(torch.load(mask_model_path, map_location=device))
+
+    loss_function = training_classes.LogCoshLoss().to(device)
+    optimizer = torch.optim.Adam(model.parameters())
+
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(device)
+
+
+    means_i, means_e = model_training._move_to_device(means, device)
+    stds_i, stds_e = model_training._move_to_device(stds, device)
+
+    mask_model.eval()
+    for parameter in mask_model.parameters():
+        parameter.requires_grad_(False)
+
+    print(f"Warming up the loader and data files {test_length} batches")
+    for batch, data in enumerate(test_loader):
+        if batch >= test_length:
+            break
+
+    print(f"Starting time evaluation of loading only for {test_length} batches")
+    time_start = time.perf_counter()
+    for batch, data in enumerate(test_loader):
+        if batch >= test_length:
+            break
+    time_end = time.perf_counter()
+    print(f"Time taken to load {test_length} batches: {time_end - time_start:.2f} seconds")
+
+    print(f"Starting time evaluation of loading and preprocessing for {test_length} batches")
+    time_start = time.perf_counter()
+    for batch, data in enumerate(test_loader):
+        inputs, eventwise_features, targets, domain_targets, _ = model_training._prepare_training_inputs(data, device, (means_i, means_e), (stds_i, stds_e), mask_model=mask_model, verbosity=0, domain_input=True)
+        if batch >= test_length:
+            break
+    time_end = time.perf_counter()
+    print(f"Time taken to load and preprocess {test_length} batches: {time_end - time_start:.2f} seconds")
+
+    print(f"Starting time evaluation of full training process for {test_length} batches")
+    time_start = time.perf_counter()
+    running_loss = 0.0
+    samples_seen = 0
+    for batch, data in enumerate(test_loader):
+        inputs, eventwise_features, targets, domain_targets, _ = model_training._prepare_training_inputs(data, device, (means_i, means_e), (stds_i, stds_e), mask_model=mask_model, verbosity=0, domain_input=True)
+        optimizer.zero_grad()
+        outputs = model_training._call_with_inputs(model, inputs, eventwise_features)
+        targets = targets.to(dtype=outputs.dtype)
+
+        loss = model_training._weighted_task_loss(
+            loss_function,
+            outputs,
+            targets,
+            domain_targets,
+            mixed_target_loss_weight,
+        )
+
+        loss.backward()
+        optimizer.step()
+        batch_size = targets.size(0)
+        running_loss += loss.item() * batch_size
+        samples_seen += batch_size
+        average_loss = running_loss / samples_seen
+
+        if batch >= test_length:
+            break
+    time_end = time.perf_counter()
+    print(f"Time taken to train on {test_length} batches: {time_end - time_start:.2f} seconds")
+    print(f"Testing completed successfully.")
+        
 
 
 if __name__ == "__main__":
@@ -261,10 +381,10 @@ if __name__ == "__main__":
     import time
 
     time_start = time.perf_counter()
-
-    _train()
+    #_train()
     #_write(0, 0, 1)
     #_plot()
+    _test(100)
     time_end = time.perf_counter()
     print(f"Total execution time: {time_end - time_start:.2f} seconds")
-    print("Training completed successfully.")
+    
