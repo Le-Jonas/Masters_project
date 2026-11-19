@@ -248,8 +248,8 @@ def _plot():
         predictions_paths, atlas_mass_paths, atlas_origin_paths, origin_truth_path, z_mass_truth_path, plotting_path, 
         save_namespace=save_namespace, bins = np.arange(54.75, 125.25, 0.5), n_total = 100)
     
-    print(f"N_tp and N_fp for the cut threshold: {N_cut_true}, {N_cut_fit_mc}, {N_cut_fit_data}")
-    print(f"N_tp and N_fp for the pseudo-roc curve: {N_pred_true}, {N_pred_fit_mc}, {N_pred_fit_data}")
+    #print(f"N_tp and N_fp for the cut threshold: {N_cut_true}, {N_cut_fit_mc}, {N_cut_fit_data}")
+    #print(f"N_tp and N_fp for the pseudo-roc curve: {N_pred_true}, {N_pred_fit_mc}, {N_pred_fit_data}")
     print("Plotting completed successfully.")
 
 def _test(test_length: int):
