@@ -397,6 +397,7 @@ class LogCoshLoss(torch.nn.Module):
                 f"of shape {tuple(outputs.shape)}."
             ) from error
 
+
         valid_targets = targets != 0
         safe_targets = torch.where(valid_targets, targets, torch.ones_like(targets))
         residual_ratio = torch.where(
@@ -404,9 +405,10 @@ class LogCoshLoss(torch.nn.Module):
             (outputs - targets) / safe_targets,
             torch.zeros_like(outputs),
         )
-        absolute_residual = residual_ratio.abs()
-        losses = (torch.log1p(absolute_residual))
-        losses = torch.where(valid_targets, losses, torch.zeros_like(losses))
+        losses = residual_ratio.abs()
+        #losses = (torch.log1p(absolute_residual))
+        #losses = torch.where(valid_targets, losses, torch.zeros_like(losses))
+
         if self.reduction == "mean":
             return losses.mean()
         elif self.reduction == "sum":

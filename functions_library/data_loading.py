@@ -13,6 +13,129 @@ from . import neural_models as _neural_
 from . import model_training as _train_
 
 
+def load_means_stds(
+    library_path: str | Path,
+    type: str,
+    exclude_features: list[str] | str | None = None,
+    exclude_fields: dict[str, list[str] | str] | None = None,
+    include_fields: dict[str, list[str] | str] | None = None,
+    dataset: _class_.Dataset | None = None,
+) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
+    """
+    Load stored feature and eventwise normalization values.
+
+    The unfiltered values are loaded in the same order as returned by
+    ``compute_mean_std``. The CSV files do not contain field names, so any
+    filtering requires ``dataset`` with the same field layout used to create
+    the CSV files.
+
+    ``include_fields`` selects feature fields by feature name, for example
+    ``{"egammas": "pt"}`` or ``{"egammas": ["pt", "eta"]}``. Only fields
+    in the listed features are returned. ``exclude_fields`` uses the same
+    feature-scoped format.
+    Eventwise means and standard deviations are returned as empty tensors.
+    """
+    if not isinstance(type, str) or not type:
+        raise ValueError("type must be a non-empty string.")
+    if exclude_fields is not None and include_fields is not None:
+        raise ValueError("Cannot specify both include_fields and exclude_fields.")
+    if (exclude_features is not None or exclude_fields is not None or include_fields is not None) and dataset is None:
+        raise ValueError(
+            "Filtering stored means and standard deviations requires dataset "
+            "because the CSV files do not contain field names."
+        )
+
+    def _as_list(value: list[str] | str | None, name: str) -> list[str]:
+        if value is None:
+            return []
+        values = [value] if isinstance(value, str) else value
+        if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+            raise TypeError(f"{name} must be a string, list of strings, or None.")
+        return values
+
+    def _as_field_map(
+        value: dict[str, list[str] | str] | None,
+        name: str,
+    ) -> dict[str, set[str]]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise TypeError(f"{name} must be a dictionary of feature names to fields.")
+        normalized = {}
+        for feature, fields in value.items():
+            if not isinstance(feature, str):
+                raise TypeError(f"{name} feature names must be strings.")
+            normalized[feature] = set(_as_list(fields, f"{name}[{feature!r}]"))
+        return normalized
+
+    means = (
+        torch.from_numpy(
+            np.loadtxt(Path(library_path) / f"means_{type}.csv", ndmin=1)
+        ).float(),
+        torch.from_numpy(
+            np.loadtxt(Path(library_path) / f"means_{type}_events.csv", ndmin=1)
+        ).float(),
+    )
+    stds = (
+        torch.from_numpy(
+            np.loadtxt(Path(library_path) / f"stds_{type}.csv", ndmin=1)
+        ).float(),
+        torch.from_numpy(
+            np.loadtxt(Path(library_path) / f"stds_{type}_events.csv", ndmin=1)
+        ).float(),
+    )
+
+    if dataset is None:
+        return means, stds
+
+    fields = list(dataset.fields)
+    feature_fields = [field for field in fields if not field.startswith("eventwise_")]
+    event_fields = [field for field in fields if field.startswith("eventwise_")]
+    if len(feature_fields) != len(means[0]) or len(event_fields) != len(means[1]):
+        raise ValueError(
+            "The dataset field layout does not match the stored normalization "
+            f"values: found {len(feature_fields)} feature and {len(event_fields)} "
+            f"eventwise fields, expected {len(means[0])} and {len(means[1])}."
+        )
+
+    excluded_features = set(_as_list(exclude_features, "exclude_features"))
+    excluded_fields = _as_field_map(exclude_fields, "exclude_fields")
+    included_fields = _as_field_map(include_fields, "include_fields")
+
+    def _select(source_fields: list[str], source_features: list[str]) -> list[int]:
+        selected = []
+        offset = 0
+        for feature in source_features:
+            for field_name in dataset._field_names[feature]:
+                width = dataset._field_widths[feature][field_name]
+                field_indices = range(offset, offset + width)
+                offset += width
+                if feature in excluded_features:
+                    continue
+                if field_name in excluded_fields.get(feature, set()):
+                    continue
+                if included_fields and (
+                    feature not in included_fields
+                    or field_name not in included_fields[feature]
+                ):
+                    continue
+                selected.extend(field_indices)
+        if offset != len(source_fields):
+            raise ValueError(
+                f"Dataset field metadata for {source_features} does not match "
+                f"the stored field layout ({offset} != {len(source_fields)})."
+            )
+        return selected
+
+    feature_indices = _select(feature_fields, dataset.features)
+    event_indices = [] if included_fields else _select(event_fields, ["eventwise"])
+
+    return (
+        (means[0][feature_indices], means[1][event_indices]),
+        (stds[0][feature_indices], stds[1][event_indices]),
+    )
+
+
 class ShuffledContiguousBatchSampler(Sampler):
     """
     A custom batch sampler that generates batches of contiguous indices and shuffles the starting indices of the batches.
@@ -572,6 +695,7 @@ def models_to_csv_files(models_path : Path | str,
                         num_workers : int = 4,
                         pin_memory : bool = False,
                         domain_input : bool = False,
+                        means_path : Path | str = "./means_library"
                         ) -> None:
     """
     Convert model predictions to CSV files.
@@ -590,20 +714,16 @@ def models_to_csv_files(models_path : Path | str,
     """
     models_path = Path(models_path)
     csv_path = Path(csv_path)
+    means_path = Path(means_path)
 
     if (not means or not stds):
         means_dataset = _class_.H5EgammaDataset(
-                        files=h5_egam_files,
-                        mix_files=h5_data_files,
-                        mixture_ratio=mixture_ratio,
-                        mixture_seed=mix_seed,
+                        files=h5_egam_files[0],
                         exclude_features=["truth"],
-                        exclude_fields = valid_fields,
-                        valid_fields = valid_fields,
-                        y_source = "egammas",
+                        y_source = "tracks",
                         y_field = None,
                     )
-        means, stds = _misc_.compute_mean_std(means_dataset, sample_size=1_000_000, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
+        means, stds = load_means_stds(means_path, "egammas", exclude_features=["truth"], exclude_fields=valid_fields, dataset=means_dataset)
         means_dataset.close()
 
     if model_type == "egamma":
@@ -678,7 +798,7 @@ def models_to_csv_files(models_path : Path | str,
         name_parts = name.split("_")
         output_size = 1 #if name_parts[-1] in ["origin", "pt", "z"] else 2
 
-        if name_parts[-1] not in ["pt"]:
+        if name_parts[-1] not in ["origin"]:
                 continue
 
         if (name_parts[1] == "pair" and model_type == "egamma"):
@@ -736,34 +856,17 @@ def models_to_csv_files(models_path : Path | str,
             csv_mc_file = csv_path / f"{name_parts[-2]}_{name_parts[-1]}_{model_type}_predictions_mc.csv"
             csv_data_file = csv_path / f"{name_parts[-2]}_{name_parts[-1]}_{model_type}_predictions_data.csv"
 
-        if (norm_target and name_parts[-1] != "z"):
-            norm_dataset = _class_.H5EgammaDataset(
-                files=h5_egam_files,
-                mix_files=h5_data_files,
-                mixture_ratio=mixture_ratio,
-                mixture_seed=mix_seed,
-                exclude_features=["truth"],
-                exclude_fields = valid_fields,
-                valid_fields = valid_fields,
-                y_source = "truth",
-                fallback_source = "egammas",
-                y_field = [name_parts[-1]]
-            )
-            norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=1_000_000, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
-        elif norm_target:
-            norm_dataset = _class_.ZPairDataset(
-                files=h5_egam_files,
-                mix_files=h5_data_files,
-                mixture_ratio=mixture_ratio,
-                mixture_seed=mix_seed,
-                exclude_features=["truth"],
-                exclude_fields = valid_fields,
-                valid_fields = valid_fields,
-                y_source = "truth",
-                fallback_source = "egammas",
-                y_field = ["pt", "eta", "phi"]
-            )
-            norm_target = _misc_.compute_target_mean_std(norm_dataset, sample_size=500_000, batch_size=batch_size, z_target=True, num_workers=num_workers, pin_memory=pin_memory)
+        if (norm_target and name_parts[-1] not in ["z", "origin"]):
+            means_dataset = _class_.H5EgammaDataset(
+                            files=h5_egam_files[0],
+                            exclude_features=["truth"],
+                            y_source = "tracks",
+                            y_field = None,
+                        )
+            means_t, stds_t = load_means_stds(means_path, "egammas", include_fields={"egammas": [name_parts[-1]]}, dataset=means_dataset)
+            norm_target = (means_t[0], stds_t[0])
+        elif norm_target and name_parts[-1] == "z":
+            norm_target = (55_000, 40_000) #Temporary z_target solution
 
         if name_parts[-1] != "origin":
             mc_loader = DataLoader(mc_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
@@ -775,19 +878,14 @@ def models_to_csv_files(models_path : Path | str,
             np.savetxt(csv_data_file, data_predictions[:max_rows], delimiter=",")
 
         else:
-            norm_dataset = _class_.H5EgammaDataset(
-                files=h5_egam_files,
-                mix_files=h5_data_files,
-                mixture_ratio=mixture_ratio,
-                mixture_seed=mix_seed,
-                exclude_features=["truth"],
-                exclude_fields = valid_fields,
-                valid_fields = valid_fields,
-                y_source = "truth",
-                fallback_source = "egammas",
-                y_field = ["z0", "d0", "sig_z0"]
-            )
-            means_t, stds_t = _misc_.compute_target_mean_std(norm_dataset, sample_size=1_000_000, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
+            means_dataset = _class_.H5EgammaDataset(
+                            files=h5_egam_files[0],
+                            exclude_features=["truth"],
+                            y_source = "tracks",
+                            y_field = None,
+                        )
+            means_t, stds_t = load_means_stds(means_path, "egammas", include_fields={"egammas": ["z0", "d0", "sig_z0"]}, dataset=means_dataset)
+            means_t, stds_t = means_t[0], stds_t[0]
 
             mc_loader = DataLoader(mc_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
             data_loader = DataLoader(data_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
@@ -818,10 +916,17 @@ def models_to_csv_files(models_path : Path | str,
                 print(f"Data loading batch {batch+1}/{data_length}", end='\r')
             print(200*" ", end='\r')
 
+            means_e = means[1].detach().numpy()
+            stds_e = stds[1].detach().numpy()
+
+            if domain_input:
+                means_e = np.append(means_e, 0)
+                stds_e = np.append(stds_e, 1)
+
             mc_targets = (np.concatenate(mc_targets) - means_t.detach().numpy()) / stds_t.detach().numpy()
             data_targets = (np.concatenate(data_targets) - means_t.detach().numpy()) / stds_t.detach().numpy()
-            eventwise_mc = (np.concatenate(eventwise_mc) - means[1].detach().numpy()) / stds[1].detach().numpy()
-            eventwise_data = (np.concatenate(eventwise_data) - means[1].detach().numpy()) / stds[1].detach().numpy()
+            eventwise_mc = (np.concatenate(eventwise_mc) - means_e) / stds_e
+            eventwise_data = (np.concatenate(eventwise_data) - means_e) / stds_e
 
             type_paired_predictions_mc = np.loadtxt("./csv_library/type_paired_predictions_mc.csv", delimiter=",") / 8.0
             isolation_paired_predictions_mc = np.loadtxt("./csv_library/isolation_paired_predictions_mc.csv", delimiter=",") / 8.0

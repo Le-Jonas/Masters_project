@@ -32,7 +32,7 @@ def _train():
         output_size = 1 #if variable in ["origin", "pt", "z"] else 2
 
         binary_target = 13 if variable in ["origin", "origin-all"] else 2 if variable == "type" else 1 if variable == "isolation" else False
-        norm_target = True if variable in ["origin"] else False
+        norm_target = True if variable in ["origin", "pt", "z"] else False
         z_target = True if variable == "z" else False
         use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
 
@@ -60,8 +60,8 @@ def _train():
                 z_target = z_target,
                 norm_target = norm_target,
                 pin_memory = False,
-                num_epochs = 5,
-                sample_size = 1_000_000,
+                num_epochs = 2,
+                sample_size = 100_000,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
@@ -71,6 +71,7 @@ def _train():
                 domain = "bool",
                 periodic_save_interval = 2,
                 periodic_save_path = f"./models_library/model_{variable_name}.pth",
+                means_library_path = f"./means_library",
                 use_mask = use_mask
             )
             torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
@@ -98,7 +99,7 @@ def _train():
                     z_target = z_target,
                     norm_target = norm_target,
                     pin_memory = False,
-                    num_epochs = 5,
+                    num_epochs = 2,
                     sample_size = 1_000_000,
                     #domain_adversary = True,
                     #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
@@ -110,6 +111,7 @@ def _train():
                     periodic_save_interval = 2,
                     periodic_save_path = f"./models_library/model_{variable_name}_logvar.pth",
                     use_mask = use_mask,
+                    means_library_path = f"./means_library",
                     variance_target = model
                 )
                 torch.save(model_var.state_dict(), f"./models_library/model_{variable_name}_logvar.pth")
@@ -155,6 +157,7 @@ def _train():
                 domain_input = True,
                 periodic_save_interval = 2,
                 periodic_save_path = f"./models_library/model_{variable_name}.pth",
+                means_library_path = f"./means_library",
                 z_pid = (True, f"./models_library/model_type.pth", f"./models_library/model_isolation.pth")
             )            
 
@@ -184,7 +187,7 @@ def _write(a, b, c):
     csv_path.mkdir(parents=True, exist_ok=True)
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    model_configs = {"z" : [False, False, False], "pt" : [False, False, False], "eta" : [False, False, False], "phi" : [False, False, False], "origin" : [False, False, False], "type" : [False, False, False], "isolation" : [False, False, False]}
+    model_configs = {"z" : [True, False], "pt" : [True, False], "eta" : [False, False], "phi" : [False, False], "origin" : [False, False], "type" : [False, False], "isolation" : [False, False]}
     if a:
         data_loading.models_to_csv_files(
             models_path,
@@ -233,7 +236,7 @@ def _plot():
     csv_string = f"{base_string}/csv_library"
     atlas_mass_paths = [f"{csv_string}/z_pair_atlas_mc.csv", f"{csv_string}/z_pair_atlas_data.csv"]
     atlas_origin_paths = [f"{csv_string}/origin_pair_atlas_mc.csv", f"{csv_string}/origin_pair_atlas_data.csv"]
-    predictions_paths = [f"{csv_string}/origin_pair_predictions_mc.csv", f"{csv_string}/origin_pair_predictions_data.csv"]
+    predictions_paths = [f"{csv_string}/origin-all_pair_predictions_mc.csv", f"{csv_string}/origin-all_pair_predictions_data.csv"]
     origin_truth_path = f"{csv_string}/origin_pair_truth_mc.csv"
     z_mass_truth_path = f"{csv_string}/z_pair_truth_mc.csv"
     save_namespace = ["mc", "data"]
@@ -383,8 +386,20 @@ if __name__ == "__main__":
 
     time_start = time.perf_counter()
     #_train()
-    #_write(1, 0, 0)
-    #_plot()
-    _test(100)
+    #_write(1, 1, 0)
+    _plot()
+    #_test(100)
     time_end = time.perf_counter()
     print(f"Total execution time: {time_end - time_start:.2f} seconds")
+
+
+#TESTING OUTPUT
+#Warming up the loader and data files 100 batches
+#Starting time evaluation of loading only for 100 batches
+#Time taken to load 100 batches: 79.58 seconds
+#Starting time evaluation of loading and preprocessing for 100 batches
+#Time taken to load and preprocess 100 batches: 82.74 seconds
+#Starting time evaluation of full training process for 100 batches
+#Time taken to train on 100 batches: 85.04 seconds
+#Testing completed successfully.
+#Total execution time: 432.70 seconds

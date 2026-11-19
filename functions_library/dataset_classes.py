@@ -342,22 +342,55 @@ class H5EgammaDataset(Dataset):
 
             self.features = [name for name in feature_names if name not in exclude_features] if exclude_features != None else feature_names
 
+            self._field_names = {}
+            self._field_widths = {}
             for feature in self.features:
                 field_names = self._selected_field_names(feature, h5_file[feature].dtype.names)
-                
-                shape = h5_file[feature][0].shape
-                if len(shape) > 1:
-                    raise ValueError(f"Feature {feature} has shape {shape}, expected 1D-like structured array")
-                elif len(shape) == 0:
-                    self.fields.extend([f"{feature}_{name}" for name in field_names])
-                else:
-                    for i in range(shape[0]):
-                        self.fields.extend([f"{feature}_{name}_{i}" for name in field_names])
-                    
-            field_names = self._selected_field_names(
+                self._field_names[feature] = list(field_names)
+                row_width = int(np.prod(h5_file[feature].shape[1:] or (1,)))
+                self._field_widths[feature] = {
+                    name: row_width * int(np.prod(h5_file[feature].dtype.fields[name][0].shape or (1,)))
+                    for name in field_names
+                }
+
+            self._field_names["eventwise"] = self._selected_field_names(
                 "eventwise", h5_file["eventwise"].dtype.names
             )
-            self.fields.extend([f"eventwise_{name}" for name in field_names])
+            eventwise_width = int(np.prod(h5_file["eventwise"].shape[1:] or (1,)))
+            self._field_widths["eventwise"] = {
+                name: eventwise_width * int(
+                    np.prod(h5_file["eventwise"].dtype.fields[name][0].shape or (1,))
+                )
+                for name in self._field_names["eventwise"]
+            }
+
+        # Mixed datasets can contain fields that are absent from some files.
+        # Keep one stable layout and represent a missing field as NaN.
+        for path in self.files[1:]:
+            with h5py.File(path, "r") as h5_file:
+                for feature in [*self.features, "eventwise"]:
+                    if feature not in h5_file:
+                        continue
+                    for name in h5_file[feature].dtype.names:
+                        if name in self._field_names[feature]:
+                            continue
+                        if name not in self._selected_field_names(feature, [name]):
+                            continue
+                        self._field_names[feature].append(name)
+                        self._field_widths[feature][name] = int(
+                            np.prod(h5_file[feature].shape[1:] or (1,))
+                            * np.prod(h5_file[feature].dtype.fields[name][0].shape or (1,))
+                        )
+
+        self.fields = []
+        for feature in [*self.features, "eventwise"]:
+            for name in self._field_names[feature]:
+                width = self._field_widths[feature][name]
+                suffix = "" if width == 1 else "_"
+                self.fields.extend(
+                    f"{feature}_{name}{suffix}{i}" if width > 1 else f"{feature}_{name}"
+                    for i in range(width)
+                )
 
         # Processes avoid the HDF5 global lock that can serialize threaded reads.
         backend = self.metadata_backend
@@ -585,8 +618,13 @@ class H5EgammaDataset(Dataset):
         Returns:
         - numpy.ndarray: A flat array containing the values of the specified fields from the structured rows.
         """
-        names = self._selected_field_names(feature_name, rows.dtype.names)
-        values = [np.asarray(rows[name], dtype=np.float32).reshape(-1) for name in names]
+        names = self._field_names.get(feature_name, self._selected_field_names(feature_name, rows.dtype.names))
+        values = []
+        for name in names:
+            if name in rows.dtype.names:
+                values.append(np.asarray(rows[name], dtype=np.float32).reshape(-1))
+            else:
+                values.append(np.full(self._field_widths[feature_name][name], np.nan, dtype=np.float32))
         return np.concatenate(values) if values else np.empty(0, dtype=np.float32)
 
     def _eventwise_feature_matrix(self, eventwise : np.ndarray) -> np.ndarray:
@@ -599,12 +637,20 @@ class H5EgammaDataset(Dataset):
         Returns:
         - numpy.ndarray: A feature matrix containing the values of the specified eventwise fields.
         """
-        names = self._selected_field_names("eventwise", eventwise.dtype.names)
+        names = self._field_names.get("eventwise", self._selected_field_names("eventwise", eventwise.dtype.names))
         if not names:
             return np.empty((len(eventwise), 0), dtype=np.float32)
         return np.concatenate(
             [
-                np.asarray(eventwise[name], dtype=np.float32).reshape(len(eventwise), -1)
+                (
+                    np.asarray(eventwise[name], dtype=np.float32).reshape(len(eventwise), -1)
+                    if name in eventwise.dtype.names
+                    else np.full(
+                        (len(eventwise), self._field_widths["eventwise"][name]),
+                        np.nan,
+                        dtype=np.float32,
+                    )
+                )
                 for name in names
             ],
             axis=1,

@@ -1,9 +1,11 @@
+import h5py
 import torch
 import copy
 import numpy as np
 from typing import Callable
 from . import dataset_classes, neural_models, misc_functions, data_loading
 from torch.utils.data import DataLoader, Dataset
+from pathlib import Path
 
 def _move_to_device(values : tuple, device : torch.device) -> tuple:
     """
@@ -374,7 +376,6 @@ def _prepare_training_inputs(data: tuple[torch.Tensor, ...],
         targets = (targets - mean_t) / std_t
     if targets.shape[-1] == 1:
         targets = targets.reshape(-1)
-
 
     inputs = _normalize_inputs(inputs, means_i, stds_i)
     eventwise_features = _normalize_inputs(eventwise_features, means_e, stds_e)
@@ -934,6 +935,7 @@ def compressed_training_function(
     periodic_save_path : str | None = None,
     use_mask : bool | str = False,
     variance_target : torch.nn.Module | None = None,
+    means_library_path : str | Path = "./means_library",
     z_pid : tuple[bool, str, str] = (False, "", ""),
     verbosity : int = 1
 ) -> tuple[torch.nn.Module, list, list]:
@@ -942,37 +944,22 @@ def compressed_training_function(
 
     mean_dataset = dataset_classes.H5EgammaDataset(
         h5_files[:train_size_egam],
-        mix_files = mix_files[:train_size_data],
-        exclude_features = exclude_features,
-        exclude_fields = exclude_fields,
-        y_source = y_source,
-        y_field = y_field,
-        fallback_source = fallback_source,
-        fallback_field = fallback_field,
-        mixture_ratio = mixture_ratio,
-        valid_fields = valid_fields,
+        mix_files=mix_files[:train_size_data],
+        mixture_ratio=mixture_ratio,
+        exclude_features = None,
+        exclude_fields = None,
+        y_source = "tracks",
+        y_field = None,
     )
 
-    means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, verbosity=verbosity)
-    
+    means, stds = data_loading.load_means_stds(means_library_path, "egammas", exclude_features = exclude_features, exclude_fields = exclude_fields, dataset = mean_dataset)
+
     if norm_target:
         if z_target:
-            mean_dataset = dataset_classes.ZPairDataset(
-                h5_files[:train_size_egam],
-                mix_files = mix_files[:train_size_data],
-                exclude_features = exclude_features,
-                exclude_fields = exclude_fields,
-                y_source = y_source,
-                y_field = y_field,
-                fallback_source = fallback_source,
-                fallback_field = fallback_field,
-                mixture_ratio = mixture_ratio,
-                valid_fields = valid_fields,
-            )
-            
-        norm_target = misc_functions.compute_target_mean_std(mean_dataset, sample_size=sample_size, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory, persistent_workers=persistent_workers, z_target=z_target, verbosity=verbosity)
-
-
+            norm_target = (55_000, 40_000) #Temporary solution for z_target means/stds.
+        else:   
+            means_t, stds_t = data_loading.load_means_stds(means_library_path, "egammas", include_fields = {"egammas": y_field}, dataset = mean_dataset)
+            norm_target = (means_t[0], stds_t[0])
 
     train_dataset = dataset_class(
         h5_files[:train_size_egam],

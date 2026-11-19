@@ -72,6 +72,7 @@ def _train():
                 domain = "bool",
                 periodic_save_interval = 2,
                 periodic_save_path = f"../Masters_project/models_library/model_{variable_name}.pth",
+                means_library_path = f"../Masters_project/means_library",
                 use_mask = use_mask,
                 verbosity = 0
             )
@@ -111,6 +112,7 @@ def _train():
                     domain = "bool",
                     periodic_save_interval = 2,
                     periodic_save_path = f"../Masters_project/models_library/model_{variable_name}_logvar.pth",
+                    means_library_path = f"../Masters_project/means_library",
                     use_mask = use_mask,
                     variance_target = model,
                     verbosity = 0
@@ -158,6 +160,7 @@ def _train():
                 domain_input = True,
                 periodic_save_interval = 2,
                 periodic_save_path = f"../Masters_project/models_library/model_{variable_name}.pth",
+                means_library_path = f"../Masters_project/means_library",
                 z_pid = (True, f"../Masters_project/models_library/model_type.pth", f"../Masters_project/models_library/model_isolation.pth"),
                 verbosity = 0
             )            
