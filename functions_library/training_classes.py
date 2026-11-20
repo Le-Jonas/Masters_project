@@ -400,14 +400,9 @@ class LogCoshLoss(torch.nn.Module):
 
         valid_targets = targets != 0
         safe_targets = torch.where(valid_targets, targets, torch.ones_like(targets))
-        residual_ratio = torch.where(
-            valid_targets,
-            (outputs - targets) / safe_targets,
-            torch.zeros_like(outputs),
-        )
-        losses = residual_ratio.abs()
-        #losses = (torch.log1p(absolute_residual))
-        #losses = torch.where(valid_targets, losses, torch.zeros_like(losses))
+        residual_ratio = (outputs - targets) / safe_targets
+        logcosh = residual_ratio + F.softplus(-2.0 * residual_ratio) - torch.log(torch.tensor(2.0))
+        losses = torch.log(1 + logcosh/5) # Make linear growth transition to logarithmic growth for large residuals
 
         if self.reduction == "mean":
             return losses.mean()

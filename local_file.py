@@ -236,7 +236,7 @@ def _plot():
     csv_string = f"{base_string}/csv_library"
     atlas_mass_paths = [f"{csv_string}/z_pair_atlas_mc.csv", f"{csv_string}/z_pair_atlas_data.csv"]
     atlas_origin_paths = [f"{csv_string}/origin_pair_atlas_mc.csv", f"{csv_string}/origin_pair_atlas_data.csv"]
-    predictions_paths = [f"{csv_string}/origin-all_pair_predictions_mc.csv", f"{csv_string}/origin-all_pair_predictions_data.csv"]
+    predictions_paths = [f"{csv_string}/origin_pair_predictions_mc.csv", f"{csv_string}/origin_pair_predictions_data.csv"]
     origin_truth_path = f"{csv_string}/origin_pair_truth_mc.csv"
     z_mass_truth_path = f"{csv_string}/z_pair_truth_mc.csv"
     save_namespace = ["mc", "data"]
@@ -244,7 +244,7 @@ def _plot():
 
     N_pred_true, N_cut_true, N_pred_fit_mc, N_cut_fit_mc, N_pred_fit_data, N_cut_fit_data = misc_functions.create_pseudo_roc_curve(
         predictions_paths, atlas_mass_paths, atlas_origin_paths, origin_truth_path, z_mass_truth_path, plotting_path, 
-        save_namespace=save_namespace, bins = np.arange(54.75, 125.25, 0.5), n_total = 100)
+        save_namespace=save_namespace, bins = np.arange(54.75, 125.25, 0.5), n_total = 200, mc_signal_limit = 15_000)
     
     #print(f"N_tp and N_fp for the cut threshold: {N_cut_true}, {N_cut_fit_mc}, {N_cut_fit_data}")
     #print(f"N_tp and N_fp for the pseudo-roc curve: {N_pred_true}, {N_pred_fit_mc}, {N_pred_fit_data}")
@@ -381,14 +381,14 @@ if __name__ == "__main__":
     from datetime import date
     import time
 
-    #system_string = "Desktop/Masters" #Laptop path
-    system_string = "Coding/Master" #Desktop path
+    system_string = "Desktop/Masters" #Laptop path
+    #system_string = "Coding/Master" #Desktop path
 
     time_start = time.perf_counter()
     #_train()
     #_write(1, 1, 0)
-    _plot()
-    #_test(100)
+    #_plot()
+    _test(100)
     time_end = time.perf_counter()
     print(f"Total execution time: {time_end - time_start:.2f} seconds")
 

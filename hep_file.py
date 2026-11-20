@@ -274,8 +274,9 @@ def _test(test_length: int):
         exclude_features = ["truth"],
         exclude_fields = valid_fields,
         y_source = "truth",
-        y_field = ["pt"],
+        y_field = ["pt", "truthType"],
         fallback_source = "egammas",
+        fallback_field = ["pt", "passid_Tight"],
         valid_fields = valid_fields,
     )
 

@@ -290,7 +290,8 @@ def _get_totals_from_distribution(
     n_total : int = 200,
     plotting_path : str | Path | None = None,
     save_namespace : str | None = None,
-    data_truth : ArrayLike | None = None
+    data_truth : ArrayLike | None = None,
+    mc_signal_limit : int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
@@ -325,15 +326,31 @@ def _get_totals_from_distribution(
         use_fit_template = False
 
     if not use_fit_template:
-        def fit_pdf(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
-            return true_data_fit(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
+        def fit_pdf(x, amplitude_sig, sigma_cb, alpha_cb, n_cb, decay_constant):
+            return true_data_fit(x, amplitude_sig, 91.188, 2.42, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
 
-    initial_guess = [0.5, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5]
+    initial_guess = [0.2, 0.1, 1.5, 0.5, 0.05]
     saved_fit_vals = []
     saved_fit_errors = []
     saved_chi2 = []
 
-    if data_truth is not None:
+    if data_truth is not None and mc_signal_limit is not None:
+        data_truth = np.array(data_truth, dtype=bool)
+
+        z_predictions = predictions[data_truth][:mc_signal_limit]
+        bkg_predictions = predictions[~data_truth]
+        comb_predictions = (z_predictions, bkg_predictions)
+        predictions = np.concatenate((z_predictions, bkg_predictions))
+
+        z_data_masses = data_masses[data_truth][:mc_signal_limit]
+        bkg_data_masses = data_masses[~data_truth]
+        data_masses = np.concatenate((z_data_masses, bkg_data_masses))
+
+        z_truth = data_truth[data_truth][:mc_signal_limit]
+        bkg_truth = data_truth[~data_truth]
+        data_truth = np.concatenate((z_truth, bkg_truth))
+
+    elif data_truth is not None:
         data_truth = np.array(data_truth, dtype=bool)
         z_predictions = predictions[data_truth]
         bkg_predictions = predictions[~data_truth]
@@ -341,12 +358,14 @@ def _get_totals_from_distribution(
     else:
         comb_predictions = None
 
+    t = 0
     for i in range(n_total):
         predicted_labels = (predictions > prediction_values[i]).astype(bool)
         z_masses = data_masses[predicted_labels]
         z_masses = z_masses / 1000
         data_size = len(z_masses)
-        if data_size < 100:
+        if data_size < 1000:
+            t += 1
             continue
 
         fit_exclusion_mask = (z_masses > bins[0]) & (z_masses < bins[-1])
@@ -368,7 +387,7 @@ def _get_totals_from_distribution(
 
         else:
             data_truth_i = (*comb_predictions, prediction_values[i]) if data_truth is not None else None
-            fit_vals = fit_function(z_masses, bins, fit_pdf, initial_guess=initial_guess, limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path, data_truth=data_truth_i)
+            fit_vals = fit_function(z_masses, bins, fit_pdf, initial_guess=initial_guess, limits=[(0.0, 1.0), (0.0, 5.0), (0.0, 5.0), (0.0, 10.0), (0.0, 5.0)], save_path=plot_path, data_truth=data_truth_i)
             initial_guess = fit_vals[0]  # Use the fitted values as the initial guess for the next iteration
             signal_strength = initial_guess[0]
 
@@ -380,7 +399,7 @@ def _get_totals_from_distribution(
         keep_indices[i] = fit_vals[-1] == 1
 
         N_tp[i] = signal_strength * data_fit_size
-        N_fp[i] = data_fit_size - signal_strength * data_fit_size
+        N_fp[i] = (1 - signal_strength) * data_fit_size
 
 
     saved_fit_vals = np.array(saved_fit_vals).T
@@ -407,7 +426,8 @@ def _get_totals_from_distribution(
     N_tp = N_tp[keep_indices]
     N_fp = N_fp[keep_indices]
 
-    print(f"Fit failed for {n_total - keep_indices.sum()} out of {n_total} thresholds.")
+    print(f"Fit failed for {n_total - keep_indices.sum() - t} out of {n_total} thresholds.")
+    print(f"Fit not initialized for {t} thresholds due to insufficient data points (<1000).")
 
     return N_tp, N_fp
 
@@ -420,6 +440,8 @@ def _get_cut_totals_from_distribution(
     mc_background_hist : ArrayLike | None = None,
     bins : int | list[float] = np.arange(55.05, 135.05, 0.1),
     plotting_path : str | Path | None = None,
+    mc_origin_truth : ArrayLike | None = None,
+    mc_signal_limit : int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Finds the total number of true positives and true negatives for different prediction thresholds by fitting the data to the Monte Carlo signal and background histograms.
@@ -447,8 +469,17 @@ def _get_cut_totals_from_distribution(
         use_fit_template = False
 
     if not use_fit_template:
-        def fit_pdf(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant):
-            return true_data_fit(x, amplitude_sig, mean_bw, width_bw, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
+        def fit_pdf(x, amplitude_sig, sigma_cb, alpha_cb, n_cb, decay_constant):
+            return true_data_fit(x, amplitude_sig, 91.188, 2.42, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
+
+    if mc_origin_truth is not None and mc_signal_limit is not None:
+        sig_mc_origin = mc_origin[mc_origin_truth][:mc_signal_limit]
+        bkg_mc_origin = mc_origin[~mc_origin_truth]
+        mc_origin = np.concatenate((sig_mc_origin, bkg_mc_origin))
+
+        sig_mc_truth_masses = mc_truth_masses[mc_origin_truth][:mc_signal_limit]
+        bkg_mc_truth_masses = mc_truth_masses[~mc_origin_truth]
+        mc_truth_masses = np.concatenate((sig_mc_truth_masses, bkg_mc_truth_masses))
 
 
     z_masses_mc = mc_truth_masses[mc_origin] #mc_masses[mc_origin]
@@ -468,11 +499,11 @@ def _get_cut_totals_from_distribution(
         fit_vals = fit_data_to_mc(z_masses_mc, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
         signal_strength = fit_vals[0]
     else:
-        fit_vals = fit_function(z_masses_mc, bins, fit_pdf, initial_guess=[0.9, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path)
+        fit_vals = fit_function(z_masses_mc, bins, fit_pdf, initial_guess=[0.9, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (0.0, 5.0), (0.0, 5.0), (0.0, 10.0), (0.0, 5.0)], save_path=plot_path)
         signal_strength = fit_vals[0][0]
 
     N_tp_mc = signal_strength * mc_fit_size
-    N_fp_mc = mc_fit_size - signal_strength * mc_fit_size
+    N_fp_mc = (1 - signal_strength) * mc_fit_size
 
     z_masses_data = data_masses[data_origin] #Data does not have known masses. Perhaps predicted masses better than atlas masses?
     z_masses_data = z_masses_data / 1000
@@ -492,11 +523,11 @@ def _get_cut_totals_from_distribution(
         fit_vals = fit_data_to_mc(z_masses_data, mc_signal_hist, mc_background_hist, bins, premade_hists=True)
         signal_strength = fit_vals[0]
     else:
-        fit_vals = fit_function(z_masses_data, bins, fit_pdf, initial_guess=[0.9, 91.0, 10.0, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (80.0, 100.0), (0.0, 50.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)], save_path=plot_path)
+        fit_vals = fit_function(z_masses_data, bins, fit_pdf, initial_guess=[0.9, 1.0, 1.0, 1.0, 0.5], limits=[(0.0, 1.0), (0.0, 5.0), (0.0, 5.0), (0.0, 10.0), (0.0, 5.0)], save_path=plot_path)
         signal_strength = fit_vals[0][0]
 
     N_tp_data = signal_strength * data_fit_size
-    N_fp_data = data_fit_size - signal_strength * data_fit_size
+    N_fp_data = (1 - signal_strength) * data_fit_size
 
     return N_tp_mc, N_fp_mc, N_tp_data, N_fp_data
 
@@ -1129,7 +1160,8 @@ def create_pseudo_roc_curve(
     bins : int | list[float] = 100,
     n_total : int = 200,
     save_namespace : list[str] | list[None] = [None, None],
-    template_z_masses_path : tuple[str] | tuple[Path] | None = None
+    template_z_masses_path : tuple[str] | tuple[Path] | None = None,
+    mc_signal_limit : int | None = None,
 ) -> tuple[np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], np.ndarray[int], int, int]:
     """
     Creates a pseudo ROC curve by computing the number of true positives and true negatives for different prediction thresholds, as well as the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
@@ -1207,6 +1239,7 @@ def create_pseudo_roc_curve(
         n_total=n_total,
         plotting_path=plotting_path,
         save_namespace=save_namespace[0],
+        mc_signal_limit=mc_signal_limit,
     )
 
     print(f"Fitting the data Z mass distributions...")
@@ -1230,6 +1263,8 @@ def create_pseudo_roc_curve(
         mc_background_hist = bkg_z_mass_hist,
         bins=bins,
         plotting_path=plotting_path,
+        mc_signal_limit=mc_signal_limit,
+        mc_origin_truth = mc_origin_truth
     )
 
     print(f"Pseudo ROC curve creation complete. Plotting results.")

@@ -105,11 +105,13 @@ def fit_function(
         if data_truth:
             z_predictions, bkg_predictions, cut_value = data_truth
             truth_bins = np.arange(-10.05, 10.05, 0.1)
-            inset = ax.inset_axes([0.08, 0.58, 0.32, 0.32])
+            inset = ax.inset_axes([0.10, 0.66, 0.32, 0.32])
             inset.hist(z_predictions, bins=truth_bins, alpha=0.5, label="Z Predictions", color="blue", histtype="stepfilled", zorder=2)
             inset.hist(bkg_predictions, bins=truth_bins, alpha=0.5, label="Background Predictions", color="green", histtype="stepfilled", zorder=2)
             inset.axvline(cut_value, color="red", linestyle="--", label="Cut Value", zorder=3)
             inset.set_yscale("log")
+            inset.set_ylim(1e1, 5e5)
+            inset.set_xlim(np.min(bkg_predictions), np.max(z_predictions))
             inset.legend()
             inset.set_xlabel("Z-PID")
             inset.set_ylabel("Count")
@@ -119,12 +121,10 @@ def fit_function(
         info = (
             f"N_sig = {int(minimizer.values[0] * len(data)):d} ± {int(minimizer.errors[0] * len(data)):d}\n"
             f"N_bkg = {int((1 - minimizer.values[0]) * len(data)):d} ± {int((1 - minimizer.values[0]) * len(data) * minimizer.errors[0]):d}\n"
-            f"Mean (BW) = {minimizer.values[1]:.2f} ± {minimizer.errors[1]:.4f}\n"
-            f"Width (BW) = {minimizer.values[2]:.2f} ± {minimizer.errors[2]:.4f}\n"
-            f"Sigma (CB) = {minimizer.values[3]:.2f} ± {minimizer.errors[3]:.4f}\n"
-            f"Alpha (CB) = {minimizer.values[4]:.2f} ± {minimizer.errors[4]:.4f}\n"
-            f"n (CB) = {minimizer.values[5]:.2f} ± {minimizer.errors[5]:.4f}\n"
-            f"Decay Constant = {minimizer.values[6]:.2f} ± {minimizer.errors[6]:.4f}\n"
+            f"Sigma (CB) = {minimizer.values[1]:.2f} ± {minimizer.errors[1]:.4f}\n"
+            f"Alpha (CB) = {minimizer.values[2]:.2f} ± {minimizer.errors[2]:.4f}\n"
+            f"n (CB) = {minimizer.values[3]:.2f} ± {minimizer.errors[3]:.4f}\n"
+            f"Decay Constant = {minimizer.values[4]:.2f} ± {minimizer.errors[4]:.4f}\n"
             f"P(χ^2 = {minimizer.fval:.2f}, N_df = {np.sum(fit_mask) - len(initial_guess)}) = {P_chi2:.4f}"
         )
 

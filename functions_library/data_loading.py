@@ -771,7 +771,7 @@ def models_to_csv_files(models_path : Path | str,
             exclude_fields = valid_fields,
             valid_fields = valid_fields,
             y_source = "egammas",
-            y_field = ["z0", "d0", "sig_z0"],
+            y_field = ["z0", "sig_z0"],
         )
         
         data_dataset = _class_.ZPairDataset(
@@ -780,7 +780,7 @@ def models_to_csv_files(models_path : Path | str,
             exclude_fields = valid_fields,
             valid_fields = valid_fields,
             y_source = "egammas",
-            y_field = ["z0", "d0", "sig_z0"],
+            y_field = ["z0", "sig_z0"],
         )
 
         particle_size = len([field for field in mc_dataset.fields if not field.startswith("eventwise_")]) // 2
