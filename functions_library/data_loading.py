@@ -719,11 +719,15 @@ def models_to_csv_files(models_path : Path | str,
     if (not means or not stds):
         means_dataset = _class_.H5EgammaDataset(
                         files=h5_egam_files[0],
+                        #mix_files=h5_data_files,
+                        #mixture_ratio=0.66,
                         exclude_features=["truth"],
+                        #exclude_fields = valid_fields,
                         y_source = "tracks",
                         y_field = None,
                     )
         means, stds = load_means_stds(means_path, "egammas", exclude_features=["truth"], exclude_fields=valid_fields, dataset=means_dataset)
+        #means, stds = _misc_.compute_mean_std(means_dataset, sample_size = 300_000, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
         means_dataset.close()
 
     if model_type == "egamma":
@@ -798,8 +802,8 @@ def models_to_csv_files(models_path : Path | str,
         name_parts = name.split("_")
         output_size = 1 #if name_parts[-1] in ["origin", "pt", "z"] else 2
 
-        if name_parts[-1] not in ["origin"]:
-                continue
+        if name_parts[-1] not in ["pt"]:
+            continue
 
         if (name_parts[1] == "pair" and model_type == "egamma"):
             print(f"Skipping model {name} because it is a pair model and model_type is 'egamma'.")
@@ -872,8 +876,12 @@ def models_to_csv_files(models_path : Path | str,
             mc_loader = DataLoader(mc_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
             data_loader = DataLoader(data_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
-            mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, domain_input=0)
-            data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, domain_input=1)
+            if domain_input:
+                mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, domain_input=0)
+                data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, domain_input=1)
+            else:
+                mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target)
+                data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target)
             np.savetxt(csv_mc_file, mc_predictions[:max_rows], delimiter=",")
             np.savetxt(csv_data_file, data_predictions[:max_rows], delimiter=",")
 

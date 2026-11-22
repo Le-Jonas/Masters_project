@@ -34,6 +34,7 @@ def _train():
 
         binary_target = 13 if variable in ["origin", "origin-all"] else 2 if variable == "type" else 1 if variable == "isolation" else False
         norm_target = True if variable in ["origin"] else False
+        gev_target = True if variable in ["z", "pt"] else False
         z_target = True if variable == "z" else False
         use_mask = "../Masters_project/models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
 
@@ -48,7 +49,7 @@ def _train():
                 model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
-                batch_size = 4096,
+                batch_size = 2048,
                 num_workers = 7,
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
@@ -61,14 +62,14 @@ def _train():
                 z_target = z_target,
                 norm_target = norm_target,
                 pin_memory = True,
-                num_epochs = 5,
-                sample_size = 1_000_000,
+                num_epochs = 10,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
                 #gradient_reversal_strength = 0.50,
                 mixed_target_loss_weight = 0.80,
                 domain_input = True,
+                gev_target = gev_target,
                 domain = "bool",
                 periodic_save_interval = 2,
                 periodic_save_path = f"../Masters_project/models_library/model_{variable_name}.pth",
@@ -88,7 +89,7 @@ def _train():
                     model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
                     loss_function = variance_loss_class,
                     optimizer_class = torch.optim.Adam,
-                    batch_size = 4096,
+                    batch_size = 2048,
                     num_workers = 7,
                     exclude_features = ["truth"],
                     exclude_fields = valid_fields,
@@ -101,14 +102,14 @@ def _train():
                     z_target = z_target,
                     norm_target = norm_target,
                     pin_memory = True,
-                    num_epochs = 5,
-                    sample_size = 1_000_000,
+                    num_epochs = 10,
                     #domain_adversary = True,
                     #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                     #domain_loss_weight = 0.05,
                     #gradient_reversal_strength = 0.50,
                     mixed_target_loss_weight = 0.80,
                     domain_input = True,
+                    gev_target = gev_target,
                     domain = "bool",
                     periodic_save_interval = 2,
                     periodic_save_path = f"../Masters_project/models_library/model_{variable_name}_logvar.pth",
@@ -126,7 +127,7 @@ def _train():
                 plt.ylabel("Loss")
                 plt.title(f"Training and Validation Loss for {variable_name}")
                 plt.legend()
-                misc_functions.save_plot(f"../Masters_project/plots/{date.today()}/loss_plot_{variable_name}_logvar.png", fig)
+                plotting_funcs.save_plot(f"../Masters_project/plots/{date.today()}/loss_plot_{variable_name}_logvar.png", fig)
                 plt.close()
         else:
             model, train_losses, val_losses, _, _, _ = model_training.compressed_training_function(
@@ -138,7 +139,7 @@ def _train():
                 model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
-                batch_size = 4096,
+                batch_size = 2048,
                 num_workers = 7,
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
@@ -151,7 +152,6 @@ def _train():
                 norm_target = norm_target,
                 pin_memory = True,
                 num_epochs = 5,
-                sample_size = 1_000_000,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
@@ -174,7 +174,7 @@ def _train():
         plt.ylabel("Loss")
         plt.title(f"Training and Validation Loss for {variable_name}")
         plt.legend()
-        misc_functions.save_plot(f"../Masters_project/plots/{date.today()}/loss_plot_{variable_name}.png", fig)
+        plotting_funcs.save_plot(f"../Masters_project/plots/{date.today()}/loss_plot_{variable_name}.png", fig)
         plt.close()
     print("Training completed successfully.")
 
@@ -191,7 +191,7 @@ def _write(a, b, c):
     csv_path.mkdir(parents=True, exist_ok=True)
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    model_configs = {"z" : [False, False, False], "pt" : [False, False, False], "eta" : [False, False, False], "phi" : [False, False, False], "origin" : [False, False, False], "type" : [False, False, False], "isolation" : [False, False, False]}
+    model_configs = {"z" : [False, False], "pt" : [False, False], "eta" : [False, False], "phi" : [False, False], "origin" : [False, False], "type" : [False, False], "isolation" : [False, False]}
     if a:
         data_loading.models_to_csv_files(
             models_path,
@@ -379,16 +379,16 @@ if __name__ == "__main__":
     import torch
     import matplotlib.pyplot as plt
     import numpy as np
-    from functions_library import dataset_classes, neural_models, training_classes, model_training, data_loading, misc_functions
+    from functions_library import dataset_classes, neural_models, training_classes, model_training, data_loading, misc_functions, plotting_funcs
     from pathlib import Path
     from datetime import date
     import time
 
     time_start = time.perf_counter()
-    #_train()
+    _train()
     #_write(0, 0, 1)
     #_plot()
-    _test(100)
+    #_test(100)
     time_end = time.perf_counter()
     print(f"Total execution time: {time_end - time_start:.2f} seconds")
     

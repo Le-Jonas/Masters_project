@@ -257,7 +257,7 @@ def _prepare_z_targets(targets : torch.Tensor) -> torch.Tensor:
     z_mass = torch.sqrt(torch.abs((e1 + e2)**2 - (x1 + x2)**2 - (y1 + y2)**2 - (z1 + z2)**2))
     return z_mass
 
-def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_target: tuple | None, variance_target: bool) -> torch.Tensor:
+def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_target: tuple | None, variance_target: bool, gev_target: bool = False) -> torch.Tensor:
     """
     Prepare the outputs of the model for prediction by applying inverse normalization and transformations based on the provided flags.
 
@@ -269,6 +269,9 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
     Returns:
     - torch.Tensor: The prepared output tensor for prediction.
     """
+    if gev_target:
+        outputs = outputs * 1000.0
+
     if norm_target:
         mean_t, std_t = _move_to_device(norm_target, device)
         if variance_target:
@@ -279,6 +282,8 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
     elif variance_target:
         outputs = torch.exp(0.5 * outputs)
 
+
+
     return outputs
 
 def _prepare_training_inputs(data: tuple[torch.Tensor, ...], 
@@ -286,6 +291,7 @@ def _prepare_training_inputs(data: tuple[torch.Tensor, ...],
                              means : tuple | None,
                              stds : tuple | None,
                              norm_target: tuple | None = None, 
+                             gev_target: bool = False,
                              z_pid: tuple[bool, torch.nn.Module, torch.nn.Module] = (False, None, None),
                              binary_value: int | None = None, 
                              mask_model: torch.nn.Module | None = None, 
@@ -301,6 +307,7 @@ def _prepare_training_inputs(data: tuple[torch.Tensor, ...],
     skip_batch = False
 
     if z_pid[0]:
+        print("using z_pid", end='\r')
         origin_inputs = targets[:, :, 4:]
         pt_eta_phi = targets[:, :, 1:4]
         targets = targets[:, :, 0]
@@ -327,6 +334,7 @@ def _prepare_training_inputs(data: tuple[torch.Tensor, ...],
     if not torch.isfinite(targets).all():
         raise ValueError(f"Warning: Non-finite values detected in targets")
     if z_target:
+        print("using z_target", end='\r')
         targets = _prepare_z_targets(targets)
 
     if (binary_value == 13) & (domain_targets is not None) & (not z_pid[0]):
@@ -370,10 +378,13 @@ def _prepare_training_inputs(data: tuple[torch.Tensor, ...],
     elif binary_value:
         targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
     if norm_target and not z_pid[0]:
+        print("using norm_target", end='\r')
         mean_t, std_t = _move_to_device(norm_target, device)
         if mask_model is not None:
             mean_t, std_t = mean_t[0], std_t[0]
         targets = (targets - mean_t) / std_t
+    if gev_target:
+        targets = targets / 40000.0
     if targets.shape[-1] == 1:
         targets = targets.reshape(-1)
 
@@ -441,6 +452,7 @@ def train_model(
         binary_target : bool | float = False,
         z_target : bool = False,
         norm_target : tuple | None = None,
+        gev_target : bool = False,
         domain : str = "bool",
         domain_adversary : torch.nn.Module | None = None,
         domain_loss_function : Callable | None = None,
@@ -560,7 +572,7 @@ def train_model(
         samples_seen = 0
         expected_batches = len(train_loader)
         for batch, data in enumerate(train_loader):
-            inputs, eventwise_features, targets, domain_targets, skip_batch = _prepare_training_inputs(data, device, (means_i, means_e), (stds_i, stds_e), norm_target = norm_target, z_pid = z_pid, binary_value = binary_value, mask_model = mask_model, z_target = z_target, domain_input = domain_input, verbosity = verbosity, domain = domain, batch_numbers = (batch, expected_batches))
+            inputs, eventwise_features, targets, domain_targets, skip_batch = _prepare_training_inputs(data, device, (means_i, means_e), (stds_i, stds_e), norm_target = norm_target, gev_target = gev_target, z_pid = z_pid, binary_value = binary_value, mask_model = mask_model, z_target = z_target, domain_input = domain_input, verbosity = verbosity, domain = domain, batch_numbers = (batch, expected_batches))
             if skip_batch:
                 continue
 
@@ -617,6 +629,7 @@ def train_model(
                 print(
                     f'Batch {batch + 1}/{expected_batches}, '
                     f'Loss: {average_loss:.4f}',
+                    f'Target Mean/Std: {targets.mean().item():.4f}/{targets.std().item():.4f}',
                     end='\r',
                 )
 
@@ -651,7 +664,8 @@ def train_model(
             mask_model=mask_model,
             variance_target=variance_target,
             z_pid=z_pid,
-            verbosity=verbosity
+            verbosity=verbosity,
+            gev_target=gev_target,
         )
         val_losses.append(val_loss)
         train_losses.append(epoch_loss)
@@ -702,6 +716,7 @@ def validate_model(
         domain_input : bool = False,
         z_target : bool = False,
         norm_target : tuple | None = None,
+        gev_target : bool = False,
         mask_model : torch.nn.Module | None = None,
         variance_target : torch.nn.Module | None = None,
         z_pid : tuple[bool, torch.nn.Module, torch.nn.Module] = (False, None, None),
@@ -762,7 +777,7 @@ def validate_model(
     with torch.no_grad():
         expected_batches = len(val_loader)
         for batch, data in enumerate(val_loader):
-            inputs, eventwise_features, targets, domain_targets, skip_batch = _prepare_training_inputs(data, device, (means_i, means_e), (stds_i, stds_e), norm_target = norm_target, z_pid = z_pid, binary_value = binary_value, mask_model = mask_model, z_target = z_target, domain_input = domain_input, verbosity = verbosity, domain = domain, batch_numbers = (batch, expected_batches))
+            inputs, eventwise_features, targets, domain_targets, skip_batch = _prepare_training_inputs(data, device, (means_i, means_e), (stds_i, stds_e), norm_target = norm_target, gev_target = gev_target, z_pid = z_pid, binary_value = binary_value, mask_model = mask_model, z_target = z_target, domain_input = domain_input, verbosity = verbosity, domain = domain, batch_numbers = (batch, expected_batches))
             if skip_batch:
                 continue
             
@@ -834,6 +849,7 @@ def predict(
     stds : tuple | None = None, 
     norm_target : tuple | None = None,
     variance_target : bool = False,
+    gev_target : bool = False,
     domain_input : bool | int = False,
     verbosity : int = 1
 ) -> np.ndarray:
@@ -872,7 +888,7 @@ def predict(
                 inputs = _function_on_inputs(torch.nan_to_num, inputs, (), {'nan': 0.0, 'posinf': 0.0, 'neginf': 0.0})  # Replace NaN values with 0.0
                 eventwise_features = torch.nan_to_num(eventwise_features, nan=0.0, posinf=0.0, neginf=0.0)  # Replace NaN values with 0.0
                 
-                if domain_input or isinstance(domain_input, int):
+                if domain_input or type(domain_input) == int:
                     if type(domain_input) == int:
                         domain = torch.ones_like(domain) * domain_input
                     eventwise_features = torch.column_stack((eventwise_features, domain.to(dtype=eventwise_features.dtype)))
@@ -880,7 +896,7 @@ def predict(
                 outputs = _call_with_inputs(model, inputs, eventwise_features)
                 outputs = outputs.to(dtype=torch.float32)
 
-                outputs = _prepare_predict_outputs(outputs, device, norm_target, variance_target)
+                outputs = _prepare_predict_outputs(outputs, device, norm_target, variance_target, gev_target)
 
                 predictions.append(outputs.cpu().numpy())
                 if verbosity > 0:
@@ -925,12 +941,12 @@ def compressed_training_function(
     domain_input : bool = False,
     binary_target : bool | float = False,
     validation_split : float = 0.25,
-    sample_size : int = 1000000,
     use_old_model : torch.nn.Module | bool = False,
     discard_remainder : bool = True,
     domain : str = "bool",
     z_target : bool = False,
     norm_target : bool | None = None,
+    gev_target : bool = False,
     periodic_save_interval : int | None = None,
     periodic_save_path : str | None = None,
     use_mask : bool | str = False,
@@ -943,16 +959,18 @@ def compressed_training_function(
     train_size_data = int((1 - validation_split) * len(mix_files))
 
     mean_dataset = dataset_classes.H5EgammaDataset(
-        h5_files[:train_size_egam],
-        mix_files=mix_files[:train_size_data],
-        mixture_ratio=mixture_ratio,
-        exclude_features = None,
-        exclude_fields = None,
+        h5_files[0],
+        #mix_files=mix_files[:train_size_data],
+        #mixture_ratio=mixture_ratio,
+        exclude_features = "truth",
+        #exclude_fields = valid_fields,
         y_source = "tracks",
+        fallback_source = "egammas",
         y_field = None,
     )
 
     means, stds = data_loading.load_means_stds(means_library_path, "egammas", exclude_features = exclude_features, exclude_fields = exclude_fields, dataset = mean_dataset)
+    #means, stds = misc_functions.compute_mean_std(mean_dataset, sample_size = 300_000, batch_size=batch_size, num_workers=num_workers, persistent_workers=persistent_workers, pin_memory=pin_memory)
 
     if norm_target:
         if z_target:
@@ -960,6 +978,7 @@ def compressed_training_function(
         else:   
             means_t, stds_t = data_loading.load_means_stds(means_library_path, "egammas", include_fields = {"egammas": y_field}, dataset = mean_dataset)
             norm_target = (means_t[0], stds_t[0])
+            #norm_target = misc_functions.compute_target_mean_std(mean_dataset, sample_size = 1_000_000, batch_size=batch_size, num_workers=num_workers, persistent_workers=persistent_workers, pin_memory=pin_memory)
 
     train_dataset = dataset_class(
         h5_files[:train_size_egam],
@@ -1056,11 +1075,11 @@ def compressed_training_function(
             domain_count=1,
         )
         gradient_reversal = neural_models.GradientReversal(strength = gradient_reversal_strength)
-        optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=0.002)
+        optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=1e-5, betas = (0.9, 0.999), eps = 1e-08, weight_decay = 1e-4)
     else:
         domain_adversary = None
         gradient_reversal = None
-        optimizer = optimizer_class(list(model.parameters()), lr=0.002)
+        optimizer = optimizer_class(list(model.parameters()), lr=1e-6, betas = (0.9, 0.999), eps = 1e-08, weight_decay = 1e-4)
     train_losses, val_losses = train_model(model, 
                                            optimizer, 
                                            loss_function, 
@@ -1081,11 +1100,12 @@ def compressed_training_function(
                                            domain = domain,
                                            z_target = z_target,
                                            norm_target = norm_target,
+                                           gev_target = gev_target,
                                            periodic_save_interval = periodic_save_interval,
                                            periodic_save_path = periodic_save_path,
                                            mask_model = mask_model,
                                            variance_target = variance_target,
                                            z_pid = (z_pid[0], type_model, isolation_model) if z_pid[0] else (False, None, None),
-                                           verbosity = verbosity
+                                           verbosity = verbosity,
                                            )
     return model, train_losses, val_losses, means, stds, norm_target

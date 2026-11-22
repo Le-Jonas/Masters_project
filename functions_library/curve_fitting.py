@@ -5,6 +5,7 @@ from scipy.signal import fftconvolve
 from scipy.stats import chi2
 import matplotlib.pyplot as plt
 from . import misc_functions as _misc_
+from . import plotting_funcs as _plotting_
 
 def fit_function(
     data : ArrayLike, 
@@ -130,7 +131,7 @@ def fit_function(
 
         ax.text(0.95, 0.95, info, transform=ax.transAxes, fontsize=10, va='top', ha='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='black'))
     
-        _misc_.save_plot(save_path, fig)
+        _plotting_.save_plot(save_path, fig)
         plt.close()
 
     if minimizer.fmin.is_above_max_edm or minimizer.fmin.has_reached_call_limit:
@@ -230,7 +231,7 @@ def fit_data_to_mc(
         ax.set_xlabel("Z Mass [GeV (or MeV)]")
         ax.set_ylabel("Normalized Count")
 
-        _misc_.save_plot(save_path, fig)
+        _plotting_.save_plot(save_path, fig)
         plt.close()
 
     if minimizer.fmin.is_above_max_edm or minimizer.fmin.has_reached_call_limit:
