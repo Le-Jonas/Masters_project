@@ -441,8 +441,9 @@ class WeightedRatioLoss(torch.nn.Module):
             ) from error
 
 
-        #target_scale = torch.clamp(targets.abs(), min=0.1)
-        residual_ratio = (outputs - targets) #/ target_scale
+        scale = torch.clamp(targets, min=5.0)
+        residual = outputs - targets
+        res_ratio = residual / scale
         absolute_ratio = residual_ratio.abs()
         losses = (
             absolute_ratio
