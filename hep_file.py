@@ -20,7 +20,7 @@ def _train():
     h5_files_data = h5_files_data[:20]
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    variables = ["pt"]
+    variables = ["type", "pt"]
 
     for variable in variables:
         dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin", "origin-all"] else dataset_classes.H5EgammaDataset
@@ -30,13 +30,12 @@ def _train():
             variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.RobustGaussianVarianceNLLLoss() if variable in ["pt"] else training_classes.GaussianVarianceNLLLoss()
 
         field = [["truthOrigin", "pt", "eta", "phi"], ["passid_Loose", "pt", "eta", "phi"]] if variable in ["origin", "origin-all"] else [["truthType", "passid_VeryLoose"], ["passid_Medium", "passid_VeryLoose"]] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthType"], [variable, "passid_Tight"]]
-        output_size = 1 #if variable in ["origin", "pt", "z"] else 2
-
         binary_target = 13 if variable in ["origin", "origin-all"] else 2 if variable == "type" else 1 if variable == "isolation" else False
         norm_target = True if variable in ["origin"] else False
         gev_target = True if variable in ["z", "pt"] else False
         z_target = True if variable == "z" else False
         use_mask = "../Masters_project/models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
+        model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 32], "event_hidden_sizes" : [64, 64, 16, 8], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : 1}
 
         variable_name = "pair_" + variable if variable in ["z", "origin", "origin-all"] else variable
         if variable != "origin":
@@ -46,7 +45,7 @@ def _train():
                 mixture_ratio = 0.66,
                 dataset_class = dataset_class,
                 nn_model = nn_model,
-                model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
+                model_kwargs = model_kwargs,
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
                 batch_size = 2048,
@@ -86,7 +85,7 @@ def _train():
                     mixture_ratio = 0.66,
                     dataset_class = dataset_class,
                     nn_model = nn_model,
-                    model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
+                    model_kwargs = model_kwargs,
                     loss_function = variance_loss_class,
                     optimizer_class = torch.optim.Adam,
                     batch_size = 2048,
@@ -136,7 +135,7 @@ def _train():
                 mixture_ratio = 0.66,
                 dataset_class = dataset_class,
                 nn_model = nn_model,
-                model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
+                model_kwargs = model_kwargs,
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
                 batch_size = 2048,

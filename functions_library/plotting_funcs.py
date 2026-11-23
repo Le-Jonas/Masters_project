@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .curve_fitting import fit_function, fit_data_to_mc, true_data_fit
 
-def _get_truth_totals(predictions : ArrayLike, truth : ArrayLike, origin_atlas : ArrayLike, z_masses_truth : ArrayLike | None = None, n_total : int = 200, bins : int | list[float] = np.arange(55.05, 135.05, 0.1),) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
+def _get_truth_totals(predictions : ArrayLike, truth : ArrayLike, origin_atlas : ArrayLike, z_masses_truth : ArrayLike | None = None, n_total : int = 200, bins : int | list[float] = np.arange(54.95, 135.05, 0.1),) -> tuple[np.ndarray[int], np.ndarray[int], int, int]:
     """
     Given a model, a full data loader, and a target data loader, compute the total number of true positives and true negatives for different prediction thresholds and the cut true positives and true negatives. This function is useful for evaluating the performance of a binary classification model.
 
@@ -50,7 +50,7 @@ def _get_totals_from_distribution(
     data_masses : ArrayLike,
     mc_signal_hist : ArrayLike | None = None, 
     mc_background_hist : ArrayLike | None = None,
-    bins : int | list[float] = np.arange(55.05, 135.05, 0.1),
+    bins : int | list[float] = np.arange(54.95, 135.05, 0.1),
     n_total : int = 200,
     plotting_path : str | Path | None = None,
     save_namespace : str | None = None,
@@ -91,7 +91,7 @@ def _get_totals_from_distribution(
 
     if not use_fit_template:
         def fit_pdf(x, amplitude_sig, sigma_cb, alpha_cb, n_cb, decay_constant):
-            return true_data_fit(x, amplitude_sig, 91.188, 2.42, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
+            return true_data_fit(x, amplitude_sig, 91.188, 2.4955, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
 
     initial_guess = [0.2, 0.1, 1.5, 0.5, 0.05]
     saved_fit_vals = []
@@ -202,7 +202,7 @@ def _get_cut_totals_from_distribution(
     data_masses : ArrayLike,
     mc_signal_hist : ArrayLike | None = None, 
     mc_background_hist : ArrayLike | None = None,
-    bins : int | list[float] = np.arange(55.05, 135.05, 0.1),
+    bins : int | list[float] = np.arange(54.95, 135.05, 0.1),
     plotting_path : str | Path | None = None,
     mc_origin_truth : ArrayLike | None = None,
     mc_signal_limit : int | None = None,
@@ -234,7 +234,7 @@ def _get_cut_totals_from_distribution(
 
     if not use_fit_template:
         def fit_pdf(x, amplitude_sig, sigma_cb, alpha_cb, n_cb, decay_constant):
-            return true_data_fit(x, amplitude_sig, 91.188, 2.42, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
+            return true_data_fit(x, amplitude_sig, 91.188, 2.4955, sigma_cb, alpha_cb, n_cb, decay_constant, x_range=(bins[0], bins[-1]))
 
     if mc_origin_truth is not None and mc_signal_limit is not None:
         sig_mc_origin = mc_origin[mc_origin_truth][:mc_signal_limit]
@@ -448,3 +448,75 @@ def create_pseudo_roc_curve(
     plt.close()
 
     return (N_tp_mc, N_fp_mc), (N_tp_cut, N_fp_cut), (N_tp_fit_mc, N_fp_fit_mc), (N_tp_cut_mc, N_fp_cut_mc), (N_tp_fit_data, N_fp_fit_data), (N_tp_cut_data, N_fp_cut_data)
+
+
+def get_std_plot(
+    predictions : ArrayLike,
+    std_predictions : ArrayLike,
+    truth_origin : ArrayLike,
+    bins : int | list[float] = np.arange(-54.95, 135.05, 0.1),
+    plotting_path : str | Path | None = None,
+    std_bins : int = 4
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Computes the standard deviation of the predictions for different prediction thresholds and plots the results.
+
+    Arguments:
+    - predictions: An array of model predictions.
+    - prediction_stds: An array of prediction standard deviations.
+    - truth_origin: An array of ground truth labels indicating the origin of each sample.
+
+    Keywords:
+    - bins: The number of bins or the bin edges for histogramming the predictions. Default is 1000.
+    - plotting_path: A path to save the plot. If None, the plot will not be saved.
+
+    Returns:
+    - stds: An array containing the standard deviation of the predictions for each threshold.
+    - thresholds: An array containing the prediction thresholds.
+    """
+    quantiles = np.linspace(0.05, 0.95, std_bins + 1)
+    quantile_values = np.quantile(std_predictions, quantiles)
+
+    predictions = predictions[truth_origin]
+    std_predictions = std_predictions[truth_origin]
+
+    def fit_pdf(x, bw_width, sigma_cb, alpha_cb, n_cb):
+        return true_data_fit(x, 1, 91.188, bw_width, sigma_cb, alpha_cb, n_cb, 0, x_range=(bins[0], bins[-1]))
+
+    observed_stds = []
+    binned_stds = []
+    last_quantile = 0.0
+    for quantile in quantile_values:
+        if quantile == quantile_values[0]:
+            continue 
+        if quantile == quantile_values[-1]:
+            mask = std_predictions > last_quantile
+        else:
+            mask = (std_predictions > last_quantile) & (std_predictions <= quantile)
+        binned_predictions = predictions[mask]
+        quant_mid = (quantile-last_quantile)/2
+        guess = [quant_mid, 0.1, 1.5, 0.8]
+        save_path = f"{plotting_path}/std_fit/quantile_{quant_mid:.2f}.png" if plotting_path is not None else None
+
+        fitted_params = fit_function(binned_predictions, bins, fit_pdf, initial_guess=guess, limits=[(0.0, 20.0), (0.0, 5.0), (0.0, 5.0), (0.0, 10.0)], save_path=save_path)
+        fitted_bw_width_n_error = [fitted_params[0][0], fitted_params[1][0]]
+        observed_stds.append(fitted_bw_width_n_error)
+        binned_stds.append([quant_mid, quantile - quant_mid])
+    observed_stds = np.array(observed_stds)
+    binned_stds = np.array(binned_stds)
+
+    if plotting_path is not None:
+        std_plot_path = Path(plotting_path) / "std_fit_results.png"
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.errorbar(binned_stds[:, 0], observed_stds[:, 0], yerr=observed_stds[:, 1], xerr=binned_stds[:, 1], fmt='o', capsize=5)
+        ax.set_xlabel('Prediction Standard Deviation Quantile Midpoint')
+        ax.set_ylabel('Fitted BW Width (GeV)')
+        ax.set_title('Fitted BW Width vs. Prediction Standard Deviation Quantiles')
+        ax.grid(True, linestyle='--', alpha=0.7)
+        save_plot(std_plot_path, fig)
+        plt.close()
+
+    return observed_stds, binned_stds
+
+
+

@@ -269,20 +269,17 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
     Returns:
     - torch.Tensor: The prepared output tensor for prediction.
     """
-    if gev_target:
-        outputs = outputs * 1000.0
+    if variance_target:
+        outputs = torch.exp(0.5 * outputs)
 
     if norm_target:
         mean_t, std_t = _move_to_device(norm_target, device)
-        if variance_target:
-            outputs = outputs + 2 * torch.log(std_t)
-        else:
-            outputs = outputs * std_t + mean_t
+        outputs *= std_t
+        if not variance_target:
+            outputs += mean_t
 
-    elif variance_target:
-        outputs = torch.exp(0.5 * outputs)
-
-
+    elif gev_target:
+        outputs = outputs * 40.0
 
     return outputs
 
@@ -564,6 +561,12 @@ def train_model(
         mask_model.to(device)
         mask_model.eval()
         for parameter in mask_model.parameters():
+            parameter.requires_grad_(False)
+
+    if variance_target is not None:
+        variance_target.to(device)
+        variance_target.eval()
+        for parameter in variance_target.parameters():
             parameter.requires_grad_(False)
 
     for epoch in range(num_epochs):

@@ -175,7 +175,7 @@ def _train():
         plt.close()
     print("Training completed successfully.")
 
-def _write(a, b, c):
+def _write(write_string):
     base_string = f"C:/Users/jonas/{system_string}/Main/h5/"
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
@@ -186,10 +186,12 @@ def _write(a, b, c):
     models_path = Path("./models_library")
     csv_path = Path("./csv_library")
     csv_path.mkdir(parents=True, exist_ok=True)
-
+    subset_path = Path("./subset_library")
+    subset_path.mkdir(parents=True, exist_ok=True)
+    
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    model_configs = {"z" : [True, False], "pt" : [False, False], "eta" : [False, False], "phi" : [False, False], "origin" : [False, False], "type" : [False, False], "isolation" : [False, False]}
-    if a:
+    model_configs = {"z" : [False, True], "pt" : [False, True], "eta" : [False, False], "phi" : [False, False], "origin" : [False, False], "type" : [False, False], "isolation" : [False, False]}
+    if write_string == "model_to_csv":
         data_loading.models_to_csv_files(
             models_path,
             csv_path,
@@ -204,7 +206,7 @@ def _write(a, b, c):
             model_configs = model_configs,
             domain_input = True,
         )
-    if b:
+    if write_string == "model_to_csv":
         data_loading.models_to_csv_files(
             models_path,
             csv_path,
@@ -219,7 +221,7 @@ def _write(a, b, c):
             model_configs = model_configs,
             domain_input = True,
         )
-    if c:
+    if write_string == "data_to_csv":
         data_loading.datasets_to_csv_files(
             h5_files_egam[train_size_egam:],
             h5_files_data[train_size_data:],
@@ -229,6 +231,27 @@ def _write(a, b, c):
             num_workers = 7,
             pin_memory = False,
             max_rows = 1_000_000,
+            )
+    
+    if write_string == "data_to_subset":
+        file_lists = [[h5_files_egam1, "egam1"], [h5_files_egam7, "egam7"], [h5_files_data, "data"]]
+        for list in file_lists:
+            if list[1] != "data":
+                y_source = "truth"
+                y_field = ["pt"]
+            else:
+                y_source = "egammas"
+                y_field = ["pt"]
+            data_loading.save_data_subset(
+                list[0],
+                subset_path,
+                list[1],
+                valid_fields = valid_fields,
+                exclude_features = ["truth"],
+                exclude_fields = valid_fields,
+                sample_size = 100_000,
+                y_source = y_source,
+                y_field = y_field,
             )
     print("Writing completed successfully.")
 
@@ -382,12 +405,12 @@ if __name__ == "__main__":
     from datetime import date
     import time
 
-    #system_string = "Desktop/Masters" #Laptop path
-    system_string = "Coding/Master" #Desktop path
+    system_string = "Desktop/Masters" #Laptop path
+    #system_string = "Coding/Master" #Desktop path
 
     time_start = time.perf_counter()
-    _train()
-    _write(1, 0, 0)
+    #_train()
+    _write("data_to_subset")
     #_plot()
     #_test(100)
     time_end = time.perf_counter()

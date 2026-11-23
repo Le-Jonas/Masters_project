@@ -736,8 +736,8 @@ def models_to_csv_files(models_path : Path | str,
             exclude_features=["truth"],
             exclude_fields = valid_fields,
             valid_fields = valid_fields,
-            y_source = "egammas",
-            y_field = None,
+            y_source = "truth",
+            y_field = ["eta", "phi"],
         )
         data_dataset = _class_.H5EgammaDataset(
             files=h5_data_files,
@@ -745,7 +745,7 @@ def models_to_csv_files(models_path : Path | str,
             exclude_fields = valid_fields,
             valid_fields = valid_fields,
             y_source = "egammas",
-            y_field = None,
+            y_field = ["eta", "phi"],
         )
 
         pair_mc_dataset = _class_.ZPairDataset(
@@ -803,7 +803,8 @@ def models_to_csv_files(models_path : Path | str,
         output_size = 1 #if name_parts[-1] in ["origin", "pt", "z"] else 2
 
         if name_parts[-1] not in ["pt"]:
-            continue
+            if name_parts[-2] not in ["pt"]:
+                continue
 
         if (name_parts[1] == "pair" and model_type == "egamma"):
             print(f"Skipping model {name} because it is a pair model and model_type is 'egamma'.")
@@ -851,9 +852,11 @@ def models_to_csv_files(models_path : Path | str,
 
         try:
             config_tuple = model_configs[name_parts[-1]]
-            norm_target, variance_target = config_tuple
+            norm_target, gev_target = config_tuple
         except KeyError:
-            norm_target, variance_target = False, False
+            norm_target, gev_target = False, False
+
+        variance_target = False
 
         if name_parts[-1] == "logvar":
             variance_target = True
@@ -877,11 +880,11 @@ def models_to_csv_files(models_path : Path | str,
             data_loader = DataLoader(data_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
             if domain_input:
-                mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, domain_input=0)
-                data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, domain_input=1)
+                mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, gev_target=gev_target, domain_input=0)
+                data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, gev_target=gev_target, domain_input=1)
             else:
-                mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target)
-                data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target)
+                mc_predictions = _train_.predict(model, mc_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, gev_target=gev_target)
+                data_predictions = _train_.predict(model, data_loader, means=means, stds=stds, norm_target=norm_target, variance_target=variance_target, gev_target=gev_target)
             np.savetxt(csv_mc_file, mc_predictions[:max_rows], delimiter=",")
             np.savetxt(csv_data_file, data_predictions[:max_rows], delimiter=",")
 
@@ -892,7 +895,7 @@ def models_to_csv_files(models_path : Path | str,
                             y_source = "tracks",
                             y_field = None,
                         )
-            means_t, stds_t = load_means_stds(means_path, "egammas", include_fields={"egammas": ["z0", "d0", "sig_z0"]}, dataset=means_dataset)
+            means_t, stds_t = load_means_stds(means_path, "egammas", include_fields={"egammas": ["z0", "sig_z0"]}, dataset=means_dataset)
             means_t, stds_t = means_t[0], stds_t[0]
 
             mc_loader = DataLoader(mc_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
@@ -998,6 +1001,38 @@ def models_to_csv_files(models_path : Path | str,
 
             np.savetxt(csv_mc_pair_file, mc_pair_predictions[:max_rows], delimiter=",")
             np.savetxt(csv_data_pair_file, data_pair_predictions[:max_rows], delimiter=",")
+
+            if name_parts[-2] == "pt" and name_parts[-1] == "logvar": #Requires the relevant library entries to be present
+                try:
+                    eta_truth_mc = np.loadtxt(csv_path / "eta_pair_truth_mc.csv", delimiter=",")
+                    phi_truth_mc = np.loadtxt(csv_path / "phi_pair_truth_mc.csv", delimiter=",")
+                    eta_atlas_data = np.loadtxt(csv_path / "eta_pair_atlas_data.csv", delimiter=",")
+                    phi_atlas_data = np.loadtxt(csv_path / "phi_pair_atlas_data.csv", delimiter=",")
+
+                    pt_predictions_mc = np.loadtxt(csv_path / "pt_paired_predictions_mc.csv", delimiter=",")
+                    pt_predictions_data = np.loadtxt(csv_path / "pt_paired_predictions_data.csv", delimiter=",")
+                except FileNotFoundError:
+                    print("Required CSV files for z mass calculation not found. Skipping z mass calculation.")
+                    continue
+
+                p1_mc = np.column_stack((pt_predictions_mc[:, 0], eta_truth_mc[:, 0], phi_truth_mc[:, 0]))
+                p1_mc_err = np.column_stack((mc_pair_predictions[:, 0], np.zeros_like(eta_truth_mc[:, 0]), np.zeros_like(phi_truth_mc[:, 0]))) #Assumes 0 error for eta and phi, as error is dominated by pt error
+                p2_mc = np.column_stack((pt_predictions_mc[:, 1], eta_truth_mc[:, 1], phi_truth_mc[:, 1]))
+                p2_mc_err = np.column_stack((mc_pair_predictions[:, 1], np.zeros_like(eta_truth_mc[:, 1]), np.zeros_like(phi_truth_mc[:, 1])))
+
+                p1_data = np.column_stack((pt_predictions_data[:, 0], eta_atlas_data[:, 0], phi_atlas_data[:, 0]))
+                p1_data_err = np.column_stack((data_pair_predictions[:, 0], np.zeros_like(eta_atlas_data[:, 0]), np.zeros_like(phi_atlas_data[:, 0])))
+                p2_data = np.column_stack((pt_predictions_data[:, 1], eta_atlas_data[:, 1], phi_atlas_data[:, 1]))
+                p2_data_err = np.column_stack((data_pair_predictions[:, 1], np.zeros_like(eta_atlas_data[:, 1]), np.zeros_like(phi_atlas_data[:, 1])))
+
+                z_pair_mc = _misc_._compute_z_mass_with_error(p1_mc, p1_mc_err, p2_mc, p2_mc_err)
+                z_pair_data = _misc_._compute_z_mass_with_error(p1_data, p1_data_err, p2_data, p2_data_err)
+
+                np.savetxt(csv_path / "z_pair_predictions_mc.csv", z_pair_mc[0][:max_rows], delimiter=",")
+                np.savetxt(csv_path / "z_logvar_pair_predictions_mc.csv", z_pair_mc[1][:max_rows], delimiter=",")
+                np.savetxt(csv_path / "z_pair_predictions_data.csv", z_pair_data[0][:max_rows], delimiter=",")
+                np.savetxt(csv_path / "z_logvar_pair_predictions_data.csv", z_pair_data[1][:max_rows], delimiter=",")
+
 
             pair_mc_dataset.close()
             pair_data_dataset.close()
@@ -1160,3 +1195,75 @@ def datasets_to_csv_files(
 
     for i in range(2):
         np.savetxt(csv_path / f"{name_list[i+3]}_pair_atlas_data.csv", data_variables_pair[i+3][:max_rows], delimiter=",")
+
+
+def save_data_subset(
+    h5_files: list[Path] | list[str],
+    npy_file_path: Path | str,
+    data_name: str,
+    batch_size: int = 4096,
+    sample_size: int = 100_000,
+    y_source: str = "egammas",
+    y_field: str | None = None,
+    exclude_features: list[str] | None = None,
+    exclude_fields: dict[str, bool] | None = None,
+    include_features: list[str] | None = None,
+    include_fields: dict[str, bool] | None = None,
+    valid_fields: dict[str, bool] | None = None,
+) -> int:
+    """
+    Save a subset of data from HDF5 files to a NumPy .npy file.
+
+    Arguments:
+    - h5_files (list of Path or str): List of paths to the HDF5 files.
+    - npy_file_path (Path or str): Path to the output .npy file.
+
+    Keywords:
+    - batch_size (int): The number of samples to process in each batch. Default is 4096.
+    - sample_size (int): The number of samples to use for calculating mean and std. Default is 100,000.
+    - y_source (str): The source of the target variable. Default is "egammas".
+    - y_field (str or None): The specific field for the target variable. Default is None.
+    - exclude_features (list of str or None): List of features to exclude. Default is None.
+    - exclude_fields (dict of str to bool or None): Dictionary of fields to exclude. Default is None.
+    - include_features (list of str or None): List of features to include. Default is None.
+    - include_fields (dict of str to bool or None): Dictionary of fields to include. Default is None.
+
+    Returns:
+    - int: Returns 1 upon successful completion.
+    """
+    npy_file_path = Path(npy_file_path)
+    data_path = npy_file_path / f"{data_name}_input_subset.npy"
+    target_path = npy_file_path / f"{data_name}_target_subset.csv"
+
+    if not npy_file_path.exists():
+        npy_file_path.mkdir(parents=True, exist_ok=True)
+
+    dataset = _class_.H5EgammaDataset(
+        files=h5_files,
+        exclude_features=exclude_features,
+        exclude_fields=exclude_fields,
+        include_features=include_features,
+        include_fields=include_fields,
+        valid_fields=valid_fields,
+        y_source=y_source,
+        y_field=y_field,
+    )
+
+    sampler = ShuffledContiguousBatchSampler(len(dataset), batch_size=batch_size, dataset = dataset)
+    loader = DataLoader(dataset, batch_sampler=sampler, num_workers=8, pin_memory=False)
+
+    data_list = []
+    target_list = []
+    for batch in loader:
+        particle, eventwise, target, _ = batch
+        data_list.append(torch.cat((particle, eventwise), dim=1).numpy())
+        target_list.append(target.numpy())
+        if len(data_list) * batch_size >= sample_size:
+            break
+
+    data_array = np.concatenate(data_list, axis=0)[:sample_size]
+    target_array = np.concatenate(target_list, axis=0)[:sample_size]
+    np.save(data_path, data_array)
+    np.savetxt(target_path, target_array, delimiter=',', header=','.join(dataset.y_fields), comments='')
+    dataset.close()
+    return 1
