@@ -398,58 +398,13 @@ class LogCoshLoss(torch.nn.Module):
             ) from error
 
 
-        #target_scale = torch.clamp(targets.abs(), min=0.1)
-        residual_ratio = (outputs - targets) #/ target_scale
-        absolute_ratio = residual_ratio.abs()
+        #scale = torch.clamp(targets, min=1.0)
+        residual = (outputs - targets).abs()
+        #res_ratio = residual / scale
         losses = (
-            absolute_ratio
-            + F.softplus(-2.0 * absolute_ratio)
+            residual
+            + F.softplus(-2.0 * residual)
         )
-        #loss = torch.log(1 + logcosh/5.0) * 10.0
-
-        if self.reduction == "mean":
-            return losses.mean()
-        elif self.reduction == "sum":
-            return losses.sum()
-        return losses
-
-class WeightedRatioLoss(torch.nn.Module):
-    def __init__(self, reduction: str = "mean"):
-        super().__init__()
-        if reduction not in {"none", "mean", "sum"}:
-            raise ValueError(
-                "reduction must be 'none', 'mean', or 'sum'."
-            )
-        self.reduction = reduction
-        """
-        TBD
-        """
-
-    def forward(
-        self,
-        outputs: torch.Tensor,
-        targets: torch.Tensor,
-    ) -> torch.Tensor:
-
-        try:
-            targets = targets.reshape_as(outputs)
-        except RuntimeError as error:
-            raise ValueError(
-                "WeightedRatioLoss received targets with shape "
-                f"{tuple(targets.shape)} that is incompatible with outputs "
-                f"of shape {tuple(outputs.shape)}."
-            ) from error
-
-
-        scale = torch.clamp(targets, min=5.0)
-        residual = outputs - targets
-        res_ratio = residual / scale
-        absolute_ratio = residual_ratio.abs()
-        losses = (
-            absolute_ratio
-            + F.softplus(-2.0 * absolute_ratio)
-        )
-        #loss = torch.log(1 + logcosh/5.0) * 10.0
 
         if self.reduction == "mean":
             return losses.mean()

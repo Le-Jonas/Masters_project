@@ -19,7 +19,7 @@ def _train():
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    variables = ["pt"]
+    variables = ["type"]
 
     for variable in variables:
         dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin", "origin-all"] else dataset_classes.H5EgammaDataset
@@ -29,13 +29,14 @@ def _train():
             variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.RobustGaussianVarianceNLLLoss() if variable in ["pt"] else training_classes.GaussianVarianceNLLLoss()
 
         field = [["truthOrigin", "pt", "eta", "phi"], ["passid_Loose", "pt", "eta", "phi"]] if variable in ["origin", "origin-all"] else [["truthType", "passid_VeryLoose"], ["passid_Medium", "passid_VeryLoose"]] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthType"], [variable, "passid_Tight"]]
-        output_size = 1 #if variable in ["origin", "pt", "z"] else 2
 
         binary_target = 13 if variable in ["origin", "origin-all"] else 2 if variable == "type" else 1 if variable == "isolation" else False
         norm_target = True if variable in ["origin"] else False
         gev_target = True if variable in ["z", "pt"] else False
         z_target = True if variable == "z" else False
         use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
+        model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 64, 64], "event_hidden_sizes" : [64, 64, 16, 8], "consolidation_hidden_sizes" : [64, 32, 32, 8], "output_size" : 1}
+
 
         variable_name = "pair_" + variable if variable in ["z", "origin", "origin-all"] else variable
         if variable != "origin":
@@ -45,10 +46,10 @@ def _train():
                 mixture_ratio = 0.66,
                 dataset_class = dataset_class,
                 nn_model = nn_model,
-                model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
+                model_kwargs = model_kwargs,
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
-                batch_size = 2048,
+                batch_size = 1024,
                 num_workers = 7,
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
@@ -62,18 +63,19 @@ def _train():
                 norm_target = norm_target,
                 gev_target = gev_target,
                 pin_memory = False,
-                num_epochs = 10,
+                num_epochs = 15,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
                 #gradient_reversal_strength = 0.50,
-                mixed_target_loss_weight = 0.80,
+                mixed_target_loss_weight = 1.0,
                 domain_input = True,
                 domain = "bool",
                 periodic_save_interval = 2,
                 periodic_save_path = f"./models_library/model_{variable_name}.pth",
                 means_library_path = f"./means_library",
                 use_mask = use_mask,
+                npy_training = "./subset_library",
                 verbosity = 1,
             )
             torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
@@ -85,10 +87,10 @@ def _train():
                     mixture_ratio = 0.66,
                     dataset_class = dataset_class,
                     nn_model = nn_model,
-                    model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
+                    model_kwargs = model_kwargs,
                     loss_function = variance_loss_class,
                     optimizer_class = torch.optim.Adam,
-                    batch_size = 2048,
+                    batch_size = 4096,
                     num_workers = 7,
                     exclude_features = ["truth"],
                     exclude_fields = valid_fields,
@@ -102,12 +104,12 @@ def _train():
                     norm_target = norm_target,
                     gev_target = gev_target,
                     pin_memory = False,
-                    num_epochs = 10,
+                    num_epochs = 3,
                     #domain_adversary = True,
                     #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                     #domain_loss_weight = 0.05,
                     #gradient_reversal_strength = 0.50,
-                    mixed_target_loss_weight = 0.80,
+                    mixed_target_loss_weight = 1.0,
                     domain_input = True,
                     domain = "bool",
                     periodic_save_interval = 2,
@@ -134,7 +136,7 @@ def _train():
                 mixture_ratio = 0.66,
                 dataset_class = dataset_class,
                 nn_model = nn_model,
-                model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 8], "event_hidden_sizes" : [64, 64, 16, 4], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : output_size},
+                model_kwargs = model_kwargs,
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
                 batch_size = 4096,
@@ -154,7 +156,7 @@ def _train():
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
                 #gradient_reversal_strength = 0.50,
-                #mixed_target_loss_weight = 0.10,
+                mixed_target_loss_weight = 0.80,
                 domain_input = True,
                 periodic_save_interval = 2,
                 periodic_save_path = f"./models_library/model_{variable_name}.pth",
@@ -234,14 +236,14 @@ def _write(write_string):
             )
     
     if write_string == "data_to_subset":
-        file_lists = [[h5_files_egam1, "egam1"], [h5_files_egam7, "egam7"], [h5_files_data, "data"]]
+        file_lists = [[h5_files_egam1, "sig"], [h5_files_egam7, "bkg"], [h5_files_data, "data"]]
         for list in file_lists:
             if list[1] != "data":
-                y_source = "truth"
-                y_field = ["pt"]
+                y_source = "egammas"
+                y_field = ["truthType", "passid_VeryLoose"]
             else:
                 y_source = "egammas"
-                y_field = ["pt"]
+                y_field = ["passid_Medium", "passid_VeryLoose"]
             data_loading.save_data_subset(
                 list[0],
                 subset_path,
@@ -249,7 +251,7 @@ def _write(write_string):
                 valid_fields = valid_fields,
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
-                sample_size = 100_000,
+                sample_size = 20_000,
                 y_source = y_source,
                 y_field = y_field,
             )
@@ -405,12 +407,12 @@ if __name__ == "__main__":
     from datetime import date
     import time
 
-    system_string = "Desktop/Masters" #Laptop path
-    #system_string = "Coding/Master" #Desktop path
+    #system_string = "Desktop/Masters" #Laptop path
+    system_string = "Coding/Master" #Desktop path
 
     time_start = time.perf_counter()
-    #_train()
-    _write("data_to_subset")
+    _train()
+    #_write("model_to_csv")
     #_plot()
     #_test(100)
     time_end = time.perf_counter()

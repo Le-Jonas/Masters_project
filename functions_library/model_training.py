@@ -381,7 +381,8 @@ def _prepare_training_inputs(data: tuple[torch.Tensor, ...],
             mean_t, std_t = mean_t[0], std_t[0]
         targets = (targets - mean_t) / std_t
     if gev_target:
-        targets = targets / 40000.0
+        targets = targets / 1000.0
+        targets = targets / 40.0 #Scaling by 100 to make training stable.
     if targets.shape[-1] == 1:
         targets = targets.reshape(-1)
 
@@ -632,7 +633,7 @@ def train_model(
                 print(
                     f'Batch {batch + 1}/{expected_batches}, '
                     f'Loss: {average_loss:.4f}',
-                    f'Target Mean/Std: {targets.mean().item():.4f}/{targets.std().item():.4f}',
+                    #f'Target Mean/Std: {targets.mean().item():.4f}/{targets.std().item():.4f}',
                     end='\r',
                 )
 
@@ -956,6 +957,7 @@ def compressed_training_function(
     variance_target : torch.nn.Module | None = None,
     means_library_path : str | Path = "./means_library",
     z_pid : tuple[bool, str, str] = (False, "", ""),
+    npy_training : bool | Path = False,
     verbosity : int = 1
 ) -> tuple[torch.nn.Module, list, list]:
     train_size_egam = int((1 - validation_split) * len(h5_files))
@@ -983,39 +985,62 @@ def compressed_training_function(
             norm_target = (means_t[0], stds_t[0])
             #norm_target = misc_functions.compute_target_mean_std(mean_dataset, sample_size = 1_000_000, batch_size=batch_size, num_workers=num_workers, persistent_workers=persistent_workers, pin_memory=pin_memory)
 
-    train_dataset = dataset_class(
-        h5_files[:train_size_egam],
-        mix_files = mix_files[:train_size_data],
-        exclude_features = exclude_features,
-        exclude_fields = exclude_fields,
-        y_source = y_source,
-        y_field = y_field,
-        fallback_source = fallback_source,
-        fallback_field = fallback_field,
-        mixture_ratio = mixture_ratio,
-        valid_fields = valid_fields,
-    )
+    if npy_training:
+        train_dataset = dataset_classes.NPYDataset(
+            npy_training,
+            "egammas",
+            [y_field, fallback_field],
+            dataset_type = "training"
+        )
 
-    val_dataset = dataset_class(
-        h5_files[train_size_egam:],
-        mix_files = mix_files[train_size_data:],
-        exclude_features = exclude_features,
-        exclude_fields = exclude_fields,
-        y_source = y_source,
-        y_field = y_field,
-        fallback_source = fallback_source,
-        fallback_field = fallback_field,
-        mixture_ratio = mixture_ratio,
-        valid_fields = valid_fields,
-    )
+        val_dataset = dataset_classes.NPYDataset(
+            npy_training,
+            "egammas",
+            [y_field, fallback_field],
+            dataset_type = "validation"
+        )
+
+    else:
+        train_dataset = dataset_class(
+            h5_files[:train_size_egam],
+            mix_files = mix_files[:train_size_data],
+            exclude_features = exclude_features,
+            exclude_fields = exclude_fields,
+            y_source = y_source,
+            y_field = y_field,
+            fallback_source = fallback_source,
+            fallback_field = fallback_field,
+            mixture_ratio = mixture_ratio,
+            valid_fields = valid_fields,
+        )
+
+        val_dataset = dataset_class(
+            h5_files[train_size_egam:],
+            mix_files = mix_files[train_size_data:],
+            exclude_features = exclude_features,
+            exclude_fields = exclude_fields,
+            y_source = y_source,
+            y_field = y_field,
+            fallback_source = fallback_source,
+            fallback_field = fallback_field,
+            mixture_ratio = mixture_ratio,
+            valid_fields = valid_fields,
+        )
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
-    train_sampler = data_loading.ShuffledContiguousBatchSampler(len(train_dataset), batch_size=batch_size, dataset=train_dataset, discard_remainder=discard_remainder)
-    train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, num_workers=num_workers, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers, pin_memory=pin_memory)
+    if npy_training:
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers, pin_memory=pin_memory)
+    else:
+        train_sampler = data_loading.ShuffledContiguousBatchSampler(len(train_dataset), batch_size=batch_size, dataset=train_dataset, discard_remainder=discard_remainder)
+        train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, num_workers=num_workers, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers, pin_memory=pin_memory)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers, pin_memory=pin_memory)
 
-    particle_fields = [field for field in train_dataset.fields if not field.startswith("eventwise_")]
-    event_fields = [field for field in train_dataset.fields if field.startswith("eventwise_")]
+    if npy_training:
+        particle_fields = np.zeros(train_dataset.feature_length, dtype=bool)
+        event_fields = np.zeros(train_dataset.eventwise_length, dtype=bool)
+    else:
+        particle_fields = [field for field in train_dataset.fields if not field.startswith("eventwise_")]
+        event_fields = [field for field in train_dataset.fields if field.startswith("eventwise_")]
 
     if domain_input:
         event_size = len(event_fields) + 1
@@ -1078,11 +1103,11 @@ def compressed_training_function(
             domain_count=1,
         )
         gradient_reversal = neural_models.GradientReversal(strength = gradient_reversal_strength)
-        optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=1e-5, betas = (0.9, 0.999), eps = 1e-08, weight_decay = 1e-4)
+        optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=1e-4, betas = (0.9, 0.999), eps = 1e-08, weight_decay = 1e-4)
     else:
         domain_adversary = None
         gradient_reversal = None
-        optimizer = optimizer_class(list(model.parameters()), lr=1e-6, betas = (0.9, 0.999), eps = 1e-08, weight_decay = 1e-4)
+        optimizer = optimizer_class(list(model.parameters()), lr=5e-3, betas = (0.9, 0.999), eps = 1e-08, weight_decay = 1e-4)
     train_losses, val_losses = train_model(model, 
                                            optimizer, 
                                            loss_function, 

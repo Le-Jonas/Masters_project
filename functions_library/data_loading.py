@@ -800,10 +800,9 @@ def models_to_csv_files(models_path : Path | str,
     for model_str in models_path.glob("*.pth"):
         name = model_str.stem
         name_parts = name.split("_")
-        output_size = 1 #if name_parts[-1] in ["origin", "pt", "z"] else 2
 
-        if name_parts[-1] not in ["pt"]:
-            if name_parts[-2] not in ["pt"]:
+        if name_parts[-1] not in ["type"]:
+            if name_parts[-2] not in ["pst"]:
                 continue
 
         if (name_parts[1] == "pair" and model_type == "egamma"):
@@ -824,19 +823,19 @@ def models_to_csv_files(models_path : Path | str,
             model = _neural_.ParticleOriginNetwork(
                 particle_size,
                 event_size,
-                particle_hidden_sizes=[1024, 256, 256, 256, 256, 256, 64, 8],
-                event_hidden_sizes=[64, 64, 16, 4],
-                consolidation_hidden_sizes=[32, 32, 32, 8],
-                output_size=output_size,
+                particle_hidden_sizes=[1024, 256, 256, 256, 256, 64, 64],
+                event_hidden_sizes=[64, 64, 16, 8],
+                consolidation_hidden_sizes=[64, 32, 32, 8],
+                output_size=1,
             )
         elif model_type == "pair" and name_parts[-1] != "origin":
             model = _neural_.ParticlePairNetwork(
                 particle_size,
                 event_size,
-                particle_hidden_sizes=[1024, 256, 256, 256, 256, 256, 64, 8],
-                event_hidden_sizes=[64, 64, 16, 4],
-                consolidation_hidden_sizes=[32, 32, 32, 8],
-                output_size=output_size,
+                particle_hidden_sizes=[1024, 256, 256, 256, 256, 64, 64],
+                event_hidden_sizes=[64, 64, 16, 8],
+                consolidation_hidden_sizes=[64, 32, 32, 8],
+                output_size=1,
             )
         else:
             model = _neural_.ParticlePairNetwork(
@@ -845,7 +844,7 @@ def models_to_csv_files(models_path : Path | str,
                 particle_hidden_sizes=[64, 64, 16, 16, 8],
                 event_hidden_sizes=[16, 8],
                 consolidation_hidden_sizes=[16, 8],
-                output_size=output_size,
+                output_size=1,
             )
         model.load_state_dict(torch.load(model_str, map_location=torch.device("cpu")))
         model.eval()
@@ -1033,7 +1032,6 @@ def models_to_csv_files(models_path : Path | str,
                 np.savetxt(csv_path / "z_pair_predictions_data.csv", z_pair_data[0][:max_rows], delimiter=",")
                 np.savetxt(csv_path / "z_logvar_pair_predictions_data.csv", z_pair_data[1][:max_rows], delimiter=",")
 
-
             pair_mc_dataset.close()
             pair_data_dataset.close()
 
@@ -1201,8 +1199,8 @@ def save_data_subset(
     h5_files: list[Path] | list[str],
     npy_file_path: Path | str,
     data_name: str,
-    batch_size: int = 4096,
-    sample_size: int = 100_000,
+    batch_size: int = 1024,
+    sample_size: int = 20_000,
     y_source: str = "egammas",
     y_field: str | None = None,
     exclude_features: list[str] | None = None,
@@ -1232,8 +1230,9 @@ def save_data_subset(
     - int: Returns 1 upon successful completion.
     """
     npy_file_path = Path(npy_file_path)
-    data_path = npy_file_path / f"{data_name}_input_subset.npy"
-    target_path = npy_file_path / f"{data_name}_target_subset.csv"
+
+    data_path = npy_file_path / f"{data_name}_input_egammas_subset.npy"
+    target_path = npy_file_path / f"{data_name}_target_egammas_subset.csv"
 
     if not npy_file_path.exists():
         npy_file_path.mkdir(parents=True, exist_ok=True)
@@ -1250,7 +1249,7 @@ def save_data_subset(
     )
 
     sampler = ShuffledContiguousBatchSampler(len(dataset), batch_size=batch_size, dataset = dataset)
-    loader = DataLoader(dataset, batch_sampler=sampler, num_workers=8, pin_memory=False)
+    loader = DataLoader(dataset, batch_sampler=sampler, num_workers=4, pin_memory=False)
 
     data_list = []
     target_list = []

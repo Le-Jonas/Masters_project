@@ -8,6 +8,8 @@ from pathlib import Path
 from torch.utils.data import Dataset 
 import torch
 import time
+from numpy.lib.recfunctions import structured_to_unstructured
+
 
 
 def _normalize_feature_fields(
@@ -1435,17 +1437,62 @@ class H5EgammaDatasetWrapper(Dataset):
         self.dataset.close()
 
 
-class npyDataset(Dataset):
+class NPYDataset(Dataset):
     """
     Simple dataset class for loading data from a NumPy .npy file. Each row in the .npy file is expected to contain features and a target variable, with the last column representing the target.
 
     Arguments:
     - npy_file_path (str): The path to the .npy file.
+    - csv_target_path (str): The path to the .csv file containing the target values.
+    - target_column (str): The name of the column in the .csv file containing the target values.
     """
-    def __init__(self, npy_file_path : str):
-        self.data = np.load(npy_file_path)
-        self.features = self.data[:, :-1]
-        self.targets = self.data[:, -1]
+    def __init__(self, library_path : str | Path, data_type : str, target_column : tuple[str, str], event_length : int = 6, dataset_type : str = "all", validation_split : int = 0.25):
+        library_path = Path(library_path)
+        signal_npy_path = library_path / f"sig_input_{data_type}_subset.npy"
+        background_npy_path = library_path / f"bkg_input_{data_type}_subset.npy"
+        data_npy_path = library_path / f"data_input_{data_type}_subset.npy"
+        signal_csv_path = library_path / f"sig_target_{data_type}_subset.csv"
+        background_csv_path = library_path / f"bkg_target_{data_type}_subset.csv"
+        data_csv_path = library_path / f"data_target_{data_type}_subset.csv"
+
+        signal_targets = np.genfromtxt(signal_csv_path, delimiter=',', names=True, dtype=np.float32, encoding='utf-8')
+        background_targets = np.genfromtxt(background_csv_path, delimiter=',', names=True, dtype=np.float32, encoding='utf-8')
+        data_targets = np.genfromtxt(data_csv_path, delimiter=',', names=True, dtype=np.float32, encoding='utf-8')
+
+        data_length = signal_targets.shape[0]
+        split_index = int(data_length * (1 - validation_split))
+
+        if dataset_type == "all":
+            mask = np.ones(data_length, dtype=bool)
+        elif dataset_type == "training":
+            mask = np.concatenate([np.ones(split_index, dtype=bool), np.zeros(data_length - split_index, dtype=bool)])
+        elif dataset_type == "validation":
+            mask = np.concatenate([np.zeros(split_index, dtype=bool), np.ones(data_length - split_index, dtype=bool)])
+        else:
+            raise ValueError(f"Invalid dataset_type: {dataset_type}. Must be 'all', 'training', or 'validation'.")
+        new_length = np.sum(mask)
+
+        signal_targets = structured_to_unstructured(signal_targets[target_column[0]][mask])
+        background_targets = structured_to_unstructured(background_targets[target_column[0]][mask])
+        data_targets = structured_to_unstructured(data_targets[target_column[1]][mask])
+
+        
+                
+        self.targets = torch.tensor(np.concatenate([signal_targets, background_targets, data_targets]), dtype=torch.float32)
+        self.domain_targets = torch.tensor(np.concatenate([np.zeros(new_length * 2, dtype=bool), np.ones(new_length, dtype=bool)]), dtype=torch.float32)
+
+        signal_features = np.load(signal_npy_path)[mask]
+        background_features = np.load(background_npy_path)[mask]
+        data_features = np.load(data_npy_path)[mask]
+        features = np.concatenate([signal_features, background_features, data_features])
+
+        particle_features = features[:, :-event_length]
+        eventwise_features = features[:, -event_length:]
+        self.features = torch.tensor(particle_features, dtype=torch.float32)
+        self.eventwise_features = torch.tensor(eventwise_features, dtype=torch.float32)
+
+        self.feature_length = particle_features.shape[1]
+        self.eventwise_length = eventwise_features.shape[1]
 
     def __len__(self):
         """
@@ -1454,9 +1501,9 @@ class npyDataset(Dataset):
         Returns:
         - int: The number of samples in the dataset.
         """
-        return len(self.targets)
+        return self.targets.shape[0]
 
-    def __getitem__(self, idx : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx : int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Main read function for the dataset. It retrieves a single data row based on the provided index and returns a tuple of torch tensors for features and target variable.
 
@@ -1467,10 +1514,12 @@ class npyDataset(Dataset):
         - tuple: A tuple containing the torch tensor for features and the torch tensor for the target variable.
         """
         features = self.features[idx]
+        eventwise_features = self.eventwise_features[idx]
         target = self.targets[idx]
-        return torch.from_numpy(features).float(), torch.tensor(target, dtype=torch.float32)
-    
-    def __getitems__(self, indices : list[int]) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        domain_target = self.domain_targets[idx]
+        return (features, eventwise_features, target, domain_target)
+
+    def __getitems__(self, indices : list[int]) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Main read function for the fully batched dataset. It retrieves multiple data rows based on the provided indices and returns a list of tuples of torch tensors for features and target variable.
         
@@ -1480,9 +1529,13 @@ class npyDataset(Dataset):
         Returns:
         - list: A list of tuples, each containing the torch tensor for features and the torch tensor for the target variable.
         """
-        features = torch.from_numpy(self.features[indices])
-        targets = torch.from_numpy(self.targets[indices])
-        return list(zip(features, targets))
+        features = self.features[indices]
+        eventwise_features = self.eventwise_features[indices]
+        targets = self.targets[indices]
+        domain_targets = self.domain_targets[indices]
+        batch = list(zip(features, eventwise_features, targets, domain_targets))
+        return batch
+        
 
 class ZPairDataset(H5EgammaDataset):
     """
