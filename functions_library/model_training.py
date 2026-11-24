@@ -1107,7 +1107,7 @@ def compressed_training_function(
     else:
         domain_adversary = None
         gradient_reversal = None
-        optimizer = optimizer_class(list(model.parameters()), lr=5e-3, betas = (0.9, 0.999), eps = 1e-08, weight_decay = 1e-4)
+        optimizer = optimizer_class(list(model.parameters()), lr=1e-4, betas = (0.9, 0.999), eps = 1e-08, weight_decay = 1e-4)
     train_losses, val_losses = train_model(model, 
                                            optimizer, 
                                            loss_function, 

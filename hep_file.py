@@ -61,7 +61,7 @@ def _train():
                 z_target = z_target,
                 norm_target = norm_target,
                 pin_memory = True,
-                num_epochs = 10,
+                num_epochs = 5,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
