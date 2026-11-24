@@ -922,14 +922,15 @@ def compressed_training_function(
     model_kwargs : dict,
     loss_function : torch.nn.Module,
     optimizer_class : type[torch.optim.Optimizer],
+    optimizer_kwargs : dict,
     num_epochs : int = 10,
     mix_files : list[str] | None = None,
     mixture_ratio : float = 0.5,
     exclude_features : list[str] | None = None,
     exclude_fields : dict[str, list[str]] | None = None,
-    y_source : str = "egammas",
-    y_field : str = "truthOrigin",
-    fallback_source : str | None = None,
+    y_source : str = "truth",
+    y_field : str = "pt",
+    fallback_source : str | None = "egammas",
     fallback_field : list[str] | None = None,
     valid_fields : dict[str, list[str]] | None = None,
     batch_size : int = 4096,
@@ -989,14 +990,14 @@ def compressed_training_function(
         train_dataset = dataset_classes.NPYDataset(
             npy_training,
             "egammas",
-            [y_field, fallback_field],
+            target_column = y_field,
             dataset_type = "training"
         )
 
         val_dataset = dataset_classes.NPYDataset(
             npy_training,
             "egammas",
-            [y_field, fallback_field],
+            target_column = y_field,
             dataset_type = "validation"
         )
 
@@ -1048,22 +1049,25 @@ def compressed_training_function(
         event_size = len(event_fields)
 
     if z_pid[0]:
+        from functions_library.models_dicts import model_kwargs_dict
+        type_model_kwargs = model_kwargs_dict["type"]
+        isolation_model_kwargs = model_kwargs_dict["isolation"]
+
         type_model = neural_models.ParticleOriginNetwork(
             len(particle_fields) // 2,
             event_size,
-            **model_kwargs
+            **type_model_kwargs
         ).to(device)
         isolation_model = neural_models.ParticleOriginNetwork(
             len(particle_fields) // 2,
             event_size,
-            **model_kwargs
+            **isolation_model_kwargs
         ).to(device)
         type_model.load_state_dict(torch.load(z_pid[1], map_location=device))
         isolation_model.load_state_dict(torch.load(z_pid[2], map_location=device))
 
         target_fields = [field for field in train_dataset.y_fields]
         particle_size = len(target_fields) - 3
-        model_kwargs = {"particle_hidden_sizes": [64, 64, 16, 16, 8], "event_hidden_sizes" : [16, 8], "consolidation_hidden_sizes" : [16, 8], "output_size" : 1}
         embedding_size = model_kwargs["particle_hidden_sizes"][-1] * 2 + model_kwargs["event_hidden_sizes"][-1]
     elif dataset_class == dataset_classes.ZPairDataset:
         particle_size = len(particle_fields) // 2
@@ -1086,12 +1090,12 @@ def compressed_training_function(
     if use_mask is not False and use_mask is not None:
         if not isinstance(use_mask, (str, bytes)):
             raise TypeError("use_mask must be a checkpoint path or False.")
-        mask_kwargs = model_kwargs.copy()
-        mask_kwargs["output_size"] = 1
+        from functions_library.models_dicts import model_kwargs_dict
+        type_model_kwargs = model_kwargs_dict["type"]
         mask_model = nn_model(
             particle_size,
             event_size,
-            **mask_kwargs
+            **type_model_kwargs
         ).to(device)
         mask_model.load_state_dict(torch.load(use_mask, map_location=device))
     else:
@@ -1103,11 +1107,12 @@ def compressed_training_function(
             domain_count=1,
         )
         gradient_reversal = neural_models.GradientReversal(strength = gradient_reversal_strength)
-        optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), lr=1e-4, betas = (0.9, 0.999), eps = 1e-08, weight_decay = 1e-4)
+        optimizer = optimizer_class(list(model.parameters()) + list(domain_adversary.parameters()), **optimizer_kwargs)
     else:
         domain_adversary = None
         gradient_reversal = None
-        optimizer = optimizer_class(list(model.parameters()), lr=1e-4, betas = (0.9, 0.999), eps = 1e-08, weight_decay = 1e-4)
+        optimizer = optimizer_class(list(model.parameters()), **optimizer_kwargs)
+    print(optimizer_kwargs)
     train_losses, val_losses = train_model(model, 
                                            optimizer, 
                                            loss_function, 

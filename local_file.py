@@ -19,7 +19,6 @@ def _train():
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    variables = ["type"]
 
     for variable in variables:
         dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin", "origin-all"] else dataset_classes.H5EgammaDataset
@@ -29,14 +28,13 @@ def _train():
             variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.RobustGaussianVarianceNLLLoss() if variable in ["pt"] else training_classes.GaussianVarianceNLLLoss()
 
         field = [["truthOrigin", "pt", "eta", "phi"], ["passid_Loose", "pt", "eta", "phi"]] if variable in ["origin", "origin-all"] else [["truthType", "passid_VeryLoose"], ["passid_Medium", "passid_VeryLoose"]] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthType"], [variable, "passid_Tight"]]
-
+        model_kwargs = model_kwargs_dict[variable]
+        optimizer_kwargs = optimizer_kwargs_dict[variable]
         binary_target = 13 if variable in ["origin", "origin-all"] else 2 if variable == "type" else 1 if variable == "isolation" else False
         norm_target = True if variable in ["origin"] else False
         gev_target = True if variable in ["z", "pt"] else False
         z_target = True if variable == "z" else False
         use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
-        model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 64, 64], "event_hidden_sizes" : [64, 64, 16, 8], "consolidation_hidden_sizes" : [64, 32, 32, 8], "output_size" : 1}
-
 
         variable_name = "pair_" + variable if variable in ["z", "origin", "origin-all"] else variable
         if variable != "origin":
@@ -49,13 +47,12 @@ def _train():
                 model_kwargs = model_kwargs,
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
-                batch_size = 1024,
+                optimizer_kwargs = optimizer_kwargs,
+                batch_size = 2048,
                 num_workers = 7,
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
-                y_source = "truth",
                 y_field = field[0],
-                fallback_source = "egammas",
                 fallback_field = field[1],
                 valid_fields = valid_fields,
                 binary_target = binary_target,
@@ -71,16 +68,16 @@ def _train():
                 mixed_target_loss_weight = 1.0,
                 domain_input = True,
                 domain = "bool",
-                periodic_save_interval = 2,
+                periodic_save_interval = 4,
                 periodic_save_path = f"./models_library/model_{variable_name}.pth",
                 means_library_path = f"./means_library",
                 use_mask = use_mask,
-                npy_training = "./subset_library",
+                npy_training = npy_training,
                 verbosity = 1,
             )
             torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
 
-            if variable in ["pt", "eta", "phi"]:
+            if variable in ["pt", "eta", "phi"] and False:
                 model_var, train_losses_var, val_losses_var, _, _, _ = model_training.compressed_training_function(
                     h5_files = h5_files_egam,
                     mix_files = h5_files_data,
@@ -90,13 +87,12 @@ def _train():
                     model_kwargs = model_kwargs,
                     loss_function = variance_loss_class,
                     optimizer_class = torch.optim.Adam,
-                    batch_size = 4096,
+                    optimizer_kwargs = optimizer_kwargs,
+                    batch_size = 2048,
                     num_workers = 7,
                     exclude_features = ["truth"],
                     exclude_fields = valid_fields,
-                    y_source = "truth",
                     y_field = field[0],
-                    fallback_source = "egammas",
                     fallback_field = field[1],
                     valid_fields = valid_fields,
                     binary_target = binary_target,
@@ -104,7 +100,7 @@ def _train():
                     norm_target = norm_target,
                     gev_target = gev_target,
                     pin_memory = False,
-                    num_epochs = 3,
+                    num_epochs = 15,
                     #domain_adversary = True,
                     #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                     #domain_loss_weight = 0.05,
@@ -112,8 +108,9 @@ def _train():
                     mixed_target_loss_weight = 1.0,
                     domain_input = True,
                     domain = "bool",
-                    periodic_save_interval = 2,
+                    periodic_save_interval = 4,
                     periodic_save_path = f"./models_library/model_{variable_name}_logvar.pth",
+                    npy_training = npy_training,
                     use_mask = use_mask,
                     means_library_path = f"./means_library",
                     variance_target = model
@@ -139,7 +136,8 @@ def _train():
                 model_kwargs = model_kwargs,
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
-                batch_size = 4096,
+                optimizer_kwargs = optimizer_kwargs,
+                batch_size = 2048,
                 num_workers = 7,
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
@@ -156,9 +154,9 @@ def _train():
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
                 #gradient_reversal_strength = 0.50,
-                mixed_target_loss_weight = 0.80,
+                mixed_target_loss_weight = 1.0,
                 domain_input = True,
-                periodic_save_interval = 2,
+                periodic_save_interval = 4,
                 periodic_save_path = f"./models_library/model_{variable_name}.pth",
                 means_library_path = f"./means_library",
                 z_pid = (True, f"./models_library/model_type.pth", f"./models_library/model_isolation.pth")
@@ -190,38 +188,43 @@ def _write(write_string):
     csv_path.mkdir(parents=True, exist_ok=True)
     subset_path = Path("./subset_library")
     subset_path.mkdir(parents=True, exist_ok=True)
-    
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
     model_configs = {"z" : [False, True], "pt" : [False, True], "eta" : [False, False], "phi" : [False, False], "origin" : [False, False], "type" : [False, False], "isolation" : [False, False]}
     if write_string == "model_to_csv":
         data_loading.models_to_csv_files(
             models_path,
             csv_path,
+            model_kwargs_dict,
             h5_files_egam[train_size_egam:],
             h5_files_data[train_size_data:],
             valid_fields = valid_fields,
-            batch_size = 4096,
+            batch_size = 2048,
             num_workers = 7,
             pin_memory = False,
             max_rows = 1_000_000,
             model_type = "egamma",
             model_configs = model_configs,
             domain_input = True,
+            npy_training = npy_training,
+            prediction_list = variables,
         )
     if write_string == "model_to_csv":
         data_loading.models_to_csv_files(
             models_path,
             csv_path,
+            model_kwargs_dict,
             h5_files_egam[train_size_egam:],
             h5_files_data[train_size_data:],
             valid_fields = valid_fields,
-            batch_size = 4096,
+            batch_size = 2048,
             num_workers = 7,
             pin_memory = False,
             max_rows = 1_000_000,
             model_type = "pair",
             model_configs = model_configs,
+            npy_training = npy_training,
             domain_input = True,
+            prediction_list = variables,
         )
     if write_string == "data_to_csv":
         data_loading.datasets_to_csv_files(
@@ -229,7 +232,7 @@ def _write(write_string):
             h5_files_data[train_size_data:],
             csv_path,
             valid_fields = valid_fields,
-            batch_size = 4096,
+            batch_size = 2048,
             num_workers = 7,
             pin_memory = False,
             max_rows = 1_000_000,
@@ -238,12 +241,8 @@ def _write(write_string):
     if write_string == "data_to_subset":
         file_lists = [[h5_files_egam1, "sig"], [h5_files_egam7, "bkg"], [h5_files_data, "data"]]
         for list in file_lists:
-            if list[1] != "data":
-                y_source = "egammas"
-                y_field = ["truthType", "passid_VeryLoose"]
-            else:
-                y_source = "egammas"
-                y_field = ["passid_Medium", "passid_VeryLoose"]
+            y_field = ["pt", "truthType"]
+            fallback_field = ["pt", "passid_Tight"]
             data_loading.save_data_subset(
                 list[0],
                 subset_path,
@@ -252,25 +251,26 @@ def _write(write_string):
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
                 sample_size = 20_000,
-                y_source = y_source,
                 y_field = y_field,
+                fallback_field = fallback_field,
             )
     print("Writing completed successfully.")
 
-def _plot():
-    base_string = f"C:/Users/jonas/{system_string}/Main/Masters_project"
-    csv_string = f"{base_string}/csv_library"
-    atlas_mass_paths = [f"{csv_string}/z_pair_atlas_mc.csv", f"{csv_string}/z_pair_atlas_data.csv"]
-    atlas_origin_paths = [f"{csv_string}/origin_pair_atlas_mc.csv", f"{csv_string}/origin_pair_atlas_data.csv"]
-    predictions_paths = [f"{csv_string}/origin_pair_predictions_mc.csv", f"{csv_string}/origin_pair_predictions_data.csv"]
-    origin_truth_path = f"{csv_string}/origin_pair_truth_mc.csv"
-    z_mass_truth_path = f"{csv_string}/z_pair_truth_mc.csv"
-    save_namespace = ["mc", "data"]
-    plotting_path = f"{base_string}/plots/{date.today()}/"
+def _plot(write_string : str):
+    if write_string == "pseudo_roc_plot":
+        base_string = f"C:/Users/jonas/{system_string}/Main/Masters_project"
+        csv_string = f"{base_string}/csv_library"
+        atlas_mass_paths = [f"{csv_string}/z_pair_atlas_mc.csv", f"{csv_string}/z_pair_atlas_data.csv"]
+        atlas_origin_paths = [f"{csv_string}/origin_pair_atlas_mc.csv", f"{csv_string}/origin_pair_atlas_data.csv"]
+        predictions_paths = [f"{csv_string}/origin_pair_predictions_mc.csv", f"{csv_string}/origin_pair_predictions_data.csv"]
+        origin_truth_path = f"{csv_string}/origin_pair_truth_mc.csv"
+        z_mass_truth_path = f"{csv_string}/z_pair_truth_mc.csv"
+        save_namespace = ["mc", "data"]
+        plotting_path = f"{base_string}/plots/{date.today()}/"
 
-    N_pred_true, N_cut_true, N_pred_fit_mc, N_cut_fit_mc, N_pred_fit_data, N_cut_fit_data = plotting_funcs.create_pseudo_roc_curve(
-        predictions_paths, atlas_mass_paths, atlas_origin_paths, origin_truth_path, z_mass_truth_path, plotting_path, 
-        save_namespace=save_namespace, bins = np.arange(54.75, 125.25, 0.5), n_total = 200, mc_signal_limit = 15_000)
+        N_pred_true, N_cut_true, N_pred_fit_mc, N_cut_fit_mc, N_pred_fit_data, N_cut_fit_data = plotting_funcs.create_pseudo_roc_curve(
+            predictions_paths, atlas_mass_paths, atlas_origin_paths, origin_truth_path, z_mass_truth_path, plotting_path, 
+            save_namespace=save_namespace, bins = np.arange(54.75, 125.25, 0.5), n_total = 200, mc_signal_limit = 15_000)
     
     #print(f"N_tp and N_fp for the cut threshold: {N_cut_true}, {N_cut_fit_mc}, {N_cut_fit_data}")
     #print(f"N_tp and N_fp for the pseudo-roc curve: {N_pred_true}, {N_pred_fit_mc}, {N_pred_fit_data}")
@@ -403,6 +403,7 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import numpy as np
     from functions_library import dataset_classes, neural_models, training_classes, model_training, data_loading, misc_functions, plotting_funcs
+    from functions_library.models_dicts import model_kwargs_dict, fields_dict, optimizer_kwargs_dict
     from pathlib import Path
     from datetime import date
     import time
@@ -410,10 +411,13 @@ if __name__ == "__main__":
     #system_string = "Desktop/Masters" #Laptop path
     system_string = "Coding/Master" #Desktop path
 
+    npy_training = "./subset_library" #Method to use preprocessed npy files for training and writing. Much faster but only small subset
+    variables = ["pt"]
+
     time_start = time.perf_counter()
     _train()
-    #_write("model_to_csv")
-    #_plot()
+    _write("model_to_csv")
+    #_plot("pseudo_roc_plot")
     #_test(100)
     time_end = time.perf_counter()
     print(f"Total execution time: {time_end - time_start:.2f} seconds")

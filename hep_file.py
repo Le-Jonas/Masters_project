@@ -20,22 +20,22 @@ def _train():
     h5_files_data = h5_files_data[:20]
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    variables = ["type"]
 
     for variable in variables:
         dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin", "origin-all"] else dataset_classes.H5EgammaDataset
         nn_model = neural_models.ParticlePairNetwork if variable in ["z", "origin", "origin-all"] else neural_models.ParticleOriginNetwork
-        loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "origin-all", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else training_classes.LogCoshLoss() if variable in ["pt", "z"] else torch.nn.MSELoss()
+        loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "origin-all", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else training_classes.LogCoshLoss() if variable in ["z", "pt"] else torch.nn.MSELoss()
         if variable in ["pt", "eta", "phi"]:
             variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.RobustGaussianVarianceNLLLoss() if variable in ["pt"] else training_classes.GaussianVarianceNLLLoss()
 
         field = [["truthOrigin", "pt", "eta", "phi"], ["passid_Loose", "pt", "eta", "phi"]] if variable in ["origin", "origin-all"] else [["truthType", "passid_VeryLoose"], ["passid_Medium", "passid_VeryLoose"]] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthType"], [variable, "passid_Tight"]]
+        model_kwargs = model_kwargs_dict[variable]
+        optimizer_kwargs = optimizer_kwargs_dict[variable]
         binary_target = 13 if variable in ["origin", "origin-all"] else 2 if variable == "type" else 1 if variable == "isolation" else False
         norm_target = True if variable in ["origin"] else False
         gev_target = True if variable in ["z", "pt"] else False
         z_target = True if variable == "z" else False
         use_mask = "../Masters_project/models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
-        model_kwargs = {"particle_hidden_sizes": [1024, 256, 256, 256, 256, 256, 64, 32], "event_hidden_sizes" : [64, 64, 16, 8], "consolidation_hidden_sizes" : [32, 32, 32, 8], "output_size" : 1}
 
         variable_name = "pair_" + variable if variable in ["z", "origin", "origin-all"] else variable
         if variable != "origin":
@@ -48,37 +48,37 @@ def _train():
                 model_kwargs = model_kwargs,
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
+                optimizer_kwargs = optimizer_kwargs,
                 batch_size = 2048,
                 num_workers = 7,
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
-                y_source = "truth",
                 y_field = field[0],
-                fallback_source = "egammas",
                 fallback_field = field[1],
                 valid_fields = valid_fields,
                 binary_target = binary_target,
                 z_target = z_target,
                 norm_target = norm_target,
+                gev_target = gev_target,
                 pin_memory = True,
-                num_epochs = 5,
+                num_epochs = 10,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
                 #gradient_reversal_strength = 0.50,
-                mixed_target_loss_weight = 0.80,
+                mixed_target_loss_weight = 1.0,
                 domain_input = True,
-                gev_target = gev_target,
                 domain = "bool",
-                periodic_save_interval = 2,
+                periodic_save_interval = 4,
                 periodic_save_path = f"../Masters_project/models_library/model_{variable_name}.pth",
                 means_library_path = f"../Masters_project/means_library",
                 use_mask = use_mask,
-                verbosity = 0
+                npy_training = npy_training,
+                verbosity = 0,
             )
             torch.save(model.state_dict(), f"../Masters_project/models_library/model_{variable_name}.pth")
 
-            if variable in ["pt", "eta", "phi"]:
+            if variable in ["pt", "eta", "phi"] and False:
                 model_var, train_losses_var, val_losses_var, _, _, _ = model_training.compressed_training_function(
                     h5_files = h5_files_egam,
                     mix_files = h5_files_data,
@@ -88,34 +88,34 @@ def _train():
                     model_kwargs = model_kwargs,
                     loss_function = variance_loss_class,
                     optimizer_class = torch.optim.Adam,
+                    optimizer_kwargs = optimizer_kwargs,
                     batch_size = 2048,
                     num_workers = 7,
                     exclude_features = ["truth"],
                     exclude_fields = valid_fields,
-                    y_source = "truth",
                     y_field = field[0],
-                    fallback_source = "egammas",
                     fallback_field = field[1],
                     valid_fields = valid_fields,
                     binary_target = binary_target,
                     z_target = z_target,
                     norm_target = norm_target,
+                    gev_target = gev_target,
                     pin_memory = True,
                     num_epochs = 10,
                     #domain_adversary = True,
                     #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                     #domain_loss_weight = 0.05,
                     #gradient_reversal_strength = 0.50,
-                    mixed_target_loss_weight = 0.80,
+                    mixed_target_loss_weight = 1.0,
                     domain_input = True,
-                    gev_target = gev_target,
                     domain = "bool",
-                    periodic_save_interval = 2,
+                    periodic_save_interval = 4,
                     periodic_save_path = f"../Masters_project/models_library/model_{variable_name}_logvar.pth",
-                    means_library_path = f"../Masters_project/means_library",
+                    npy_training = npy_training,
                     use_mask = use_mask,
+                    means_library_path = f"../Masters_project/means_library",
                     variance_target = model,
-                    verbosity = 0
+                    verbosity = 0,
                 )
                 torch.save(model_var.state_dict(), f"../Masters_project/models_library/model_{variable_name}_logvar.pth")
 
@@ -138,6 +138,7 @@ def _train():
                 model_kwargs = model_kwargs,
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
+                optimizer_kwargs = optimizer_kwargs,
                 batch_size = 2048,
                 num_workers = 7,
                 exclude_features = ["truth"],
@@ -155,13 +156,13 @@ def _train():
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
                 #gradient_reversal_strength = 0.50,
-                #mixed_target_loss_weight = 0.10,
+                mixed_target_loss_weight = 1.0,
                 domain_input = True,
                 periodic_save_interval = 2,
                 periodic_save_path = f"../Masters_project/models_library/model_{variable_name}.pth",
                 means_library_path = f"../Masters_project/means_library",
                 z_pid = (True, f"../Masters_project/models_library/model_type.pth", f"../Masters_project/models_library/model_isolation.pth"),
-                verbosity = 0
+                verbosity = 0,
             )            
 
             torch.save(model.state_dict(), f"../Masters_project/models_library/model_{variable_name}.pth")
@@ -177,7 +178,7 @@ def _train():
         plt.close()
     print("Training completed successfully.")
 
-def _write(a, b, c):
+def _write(write_string: str):
     base_string = "/groups/hep/morancho/ATLAS_Open_Data/Zee_Analysis/h5/"
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
@@ -185,50 +186,76 @@ def _write(a, b, c):
     train_size_egam = int((1 - validation_split) * len(h5_files_egam))
     train_size_data = int((1 - validation_split) * len(h5_files_data))
 
-    models_path = Path("./models_library")
+    models_path = Path("../Masters_project/models_library")
     csv_path = Path("./csv_library")
     csv_path.mkdir(parents=True, exist_ok=True)
-
+    subset_path = Path("../Masters_project/subset_library")
+    subset_path.mkdir(parents=True, exist_ok=True)
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    model_configs = {"z" : [False, False], "pt" : [False, False], "eta" : [False, False], "phi" : [False, False], "origin" : [False, False], "type" : [False, False], "isolation" : [False, False]}
-    if a:
+    model_configs = {"z" : [False, True], "pt" : [False, True], "eta" : [False, False], "phi" : [False, False], "origin" : [False, False], "type" : [False, False], "isolation" : [False, False]}
+    if write_string == "model_to_csv":
         data_loading.models_to_csv_files(
             models_path,
             csv_path,
+            model_kwargs_dict,
             h5_files_egam[train_size_egam:],
             h5_files_data[train_size_data:],
             valid_fields = valid_fields,
-            batch_size = 4096,
+            batch_size = 2048,
             num_workers = 7,
             pin_memory = False,
             max_rows = 1_000_000,
             model_type = "egamma",
             model_configs = model_configs,
+            domain_input = True,
+            npy_training = npy_training,
+            prediction_list = variables,
         )
-    if b:
+    if write_string == "model_to_csv":
         data_loading.models_to_csv_files(
             models_path,
             csv_path,
+            model_kwargs_dict,
             h5_files_egam[train_size_egam:],
             h5_files_data[train_size_data:],
             valid_fields = valid_fields,
-            batch_size = 4096,
+            batch_size = 2048,
             num_workers = 7,
             pin_memory = False,
             max_rows = 1_000_000,
             model_type = "pair",
             model_configs = model_configs,
+            npy_training = npy_training,
+            domain_input = True,
+            prediction_list = variables,
         )
-    if c:
+    if write_string == "data_to_csv":
         data_loading.datasets_to_csv_files(
             h5_files_egam[train_size_egam:],
             h5_files_data[train_size_data:],
             csv_path,
             valid_fields = valid_fields,
-            batch_size = 4096,
+            batch_size = 2048,
             num_workers = 7,
             pin_memory = False,
             max_rows = 1_000_000,
+            )
+    
+    if write_string == "data_to_subset":
+        file_lists = [[h5_files_egam1, "sig"], [h5_files_egam7, "bkg"], [h5_files_data, "data"]]
+        for list in file_lists:
+            y_field = ["pt", "truthType"]
+            fallback_field = ["pt", "passid_Tight"]
+            data_loading.save_data_subset(
+                list[0],
+                subset_path,
+                list[1],
+                valid_fields = valid_fields,
+                exclude_features = ["truth"],
+                exclude_fields = valid_fields,
+                sample_size = 20_000,
+                y_field = y_field,
+                fallback_field = fallback_field,
             )
     print("Writing completed successfully.")
 
@@ -249,6 +276,7 @@ def _plot():
     
     #print(f"N_tp and N_fp for the cut threshold: {N_cut_true}, {N_cut_fit_mc}, {N_cut_fit_data}")
     #print(f"N_tp and N_fp for the pseudo-roc curve: {N_pred_true}, {N_pred_fit_mc}, {N_pred_fit_data}")
+
     print("Plotting completed successfully.")
 
 def _test(test_length: int):
@@ -371,22 +399,24 @@ def _test(test_length: int):
     time_end = time.perf_counter()
     print(f"Time taken to train on {test_length} batches: {time_end - time_start:.2f} seconds")
     print(f"Testing completed successfully.")
-        
-
 
 if __name__ == "__main__":
     import torch
     import matplotlib.pyplot as plt
     import numpy as np
     from functions_library import dataset_classes, neural_models, training_classes, model_training, data_loading, misc_functions, plotting_funcs
+    from functions_library.models_dicts import model_kwargs_dict, fields_dict, optimizer_kwargs_dict
     from pathlib import Path
     from datetime import date
     import time
 
+    npy_training = None #"./subset_library" #Method to use preprocessed npy files for training and writing. Much faster but only small subset
+    variables = ["pt"]
+
     time_start = time.perf_counter()
     _train()
-    #_write(0, 0, 1)
-    #_plot()
+    #_write("model_to_csv")
+    #_plot("pseudo_roc_plot")
     #_test(100)
     time_end = time.perf_counter()
     print(f"Total execution time: {time_end - time_start:.2f} seconds")

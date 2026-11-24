@@ -681,6 +681,7 @@ def electron_predictions_to_pair_predictions(
 
 def models_to_csv_files(models_path : Path | str, 
                         csv_path : Path | str, 
+                        model_kwargs_dict : dict[str, dict[str, list[int]]],
                         h5_egam_files : list[Path] | list[str], 
                         h5_data_files : list[Path] | list[str], 
                         batch_size : int = 4096, 
@@ -695,7 +696,9 @@ def models_to_csv_files(models_path : Path | str,
                         num_workers : int = 4,
                         pin_memory : bool = False,
                         domain_input : bool = False,
-                        means_path : Path | str = "./means_library"
+                        npy_training : bool | str = False,
+                        means_path : Path | str = "./means_library",
+                        prediction_list : list[str] | list[None] = [None]
                         ) -> None:
     """
     Convert model predictions to CSV files.
@@ -730,7 +733,25 @@ def models_to_csv_files(models_path : Path | str,
         #means, stds = _misc_.compute_mean_std(means_dataset, sample_size = 300_000, batch_size=batch_size, num_workers=num_workers, pin_memory=pin_memory)
         means_dataset.close()
 
-    if model_type == "egamma":
+    if npy_training:
+        mc_dataset = _class_.NPYDataset(
+            npy_training,
+            "egammas",
+            target_column = None,
+            dataset_type = "validation",
+            source = "mc"
+        )
+        data_dataset = _class_.NPYDataset(
+            npy_training,
+            "egammas",
+            target_column = None,
+            dataset_type = "validation",
+            source = "data"
+        )
+        particle_size = mc_dataset.feature_length
+        event_size = mc_dataset.eventwise_length
+
+    elif model_type == "egamma":
         mc_dataset = _class_.H5EgammaDataset(
             files=h5_egam_files,
             exclude_features=["truth"],
@@ -801,9 +822,8 @@ def models_to_csv_files(models_path : Path | str,
         name = model_str.stem
         name_parts = name.split("_")
 
-        if name_parts[-1] not in ["type"]:
-            if name_parts[-2] not in ["pst"]:
-                continue
+        if name_parts[-1] not in prediction_list:
+            continue
 
         if (name_parts[1] == "pair" and model_type == "egamma"):
             print(f"Skipping model {name} because it is a pair model and model_type is 'egamma'.")
@@ -818,24 +838,23 @@ def models_to_csv_files(models_path : Path | str,
         csv_mc_file = csv_path / f"{name_parts[-1]}_{model_type}_predictions_mc.csv"
         csv_data_file = csv_path / f"{name_parts[-1]}_{model_type}_predictions_data.csv"
 
+        if name_parts[-1] != "logvar":
+            model_kwargs = model_kwargs_dict[name_parts[-1]]
+        else:
+            model_kwargs = model_kwargs_dict[name_parts[-2]]
+
         print(f"Processing model: {model_str.name}")
         if model_type == "egamma":
             model = _neural_.ParticleOriginNetwork(
                 particle_size,
                 event_size,
-                particle_hidden_sizes=[1024, 256, 256, 256, 256, 64, 64],
-                event_hidden_sizes=[64, 64, 16, 8],
-                consolidation_hidden_sizes=[64, 32, 32, 8],
-                output_size=1,
+                **model_kwargs,
             )
         elif model_type == "pair" and name_parts[-1] != "origin":
             model = _neural_.ParticlePairNetwork(
                 particle_size,
                 event_size,
-                particle_hidden_sizes=[1024, 256, 256, 256, 256, 64, 64],
-                event_hidden_sizes=[64, 64, 16, 8],
-                consolidation_hidden_sizes=[64, 32, 32, 8],
-                output_size=1,
+                **model_kwargs,
             )
         else:
             model = _neural_.ParticlePairNetwork(
@@ -988,7 +1007,7 @@ def models_to_csv_files(models_path : Path | str,
 
 
 
-        if model_type == "egamma":
+        if model_type == "egamma" and not npy_training:
             mc_pair_predictions = electron_predictions_to_pair_predictions(mc_predictions, mc_dataset, pair_mc_dataset)
             data_pair_predictions = electron_predictions_to_pair_predictions(data_predictions, data_dataset, pair_data_dataset)
 
@@ -1201,13 +1220,16 @@ def save_data_subset(
     data_name: str,
     batch_size: int = 1024,
     sample_size: int = 20_000,
-    y_source: str = "egammas",
+    y_source: str = "truth",
     y_field: str | None = None,
+    fallback_source: str | None = "egammas",
+    fallback_field: str | None = None,
     exclude_features: list[str] | None = None,
     exclude_fields: dict[str, bool] | None = None,
     include_features: list[str] | None = None,
     include_fields: dict[str, bool] | None = None,
     valid_fields: dict[str, bool] | None = None,
+    verbosity : int = 1
 ) -> int:
     """
     Save a subset of data from HDF5 files to a NumPy .npy file.
@@ -1246,6 +1268,8 @@ def save_data_subset(
         valid_fields=valid_fields,
         y_source=y_source,
         y_field=y_field,
+        fallback_source=fallback_source,
+        fallback_field=fallback_field
     )
 
     sampler = ShuffledContiguousBatchSampler(len(dataset), batch_size=batch_size, dataset = dataset)
@@ -1259,6 +1283,10 @@ def save_data_subset(
         target_list.append(target.numpy())
         if len(data_list) * batch_size >= sample_size:
             break
+        if verbosity > 0:
+            print(200*" ", end='\r')
+            print(f"Processed {len(data_list) * batch_size} samples out of {sample_size} for {data_name} subset.", end='\r')
+    print(200*" ", end='\r')
 
     data_array = np.concatenate(data_list, axis=0)[:sample_size]
     target_array = np.concatenate(target_list, axis=0)[:sample_size]
