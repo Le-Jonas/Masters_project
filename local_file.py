@@ -60,7 +60,7 @@ def _train():
                 norm_target = norm_target,
                 gev_target = gev_target,
                 pin_memory = False,
-                num_epochs = 15,
+                num_epochs = 25,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,

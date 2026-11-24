@@ -7,6 +7,8 @@ from . import dataset_classes, neural_models, misc_functions, data_loading
 from torch.utils.data import DataLoader, Dataset
 from pathlib import Path
 
+gev_multiplier = 100/3
+
 def _move_to_device(values : tuple, device : torch.device) -> tuple:
     """
     Move a tuple of values to the specified device.
@@ -279,7 +281,7 @@ def _prepare_predict_outputs(outputs: torch.Tensor, device: torch.device, norm_t
             outputs += mean_t
 
     elif gev_target:
-        outputs = outputs * 40.0
+        outputs *= gev_multiplier
 
     return outputs
 
@@ -381,8 +383,8 @@ def _prepare_training_inputs(data: tuple[torch.Tensor, ...],
             mean_t, std_t = mean_t[0], std_t[0]
         targets = (targets - mean_t) / std_t
     if gev_target:
-        targets = targets / 1000.0
-        targets = targets / 40.0 #Scaling by 100 to make training stable.
+        targets /= 1000.0 
+        targets /= gev_multiplier #Scaling by 100 to make training stable.
     if targets.shape[-1] == 1:
         targets = targets.reshape(-1)
 

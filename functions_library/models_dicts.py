@@ -21,7 +21,7 @@ fields_dict = {"type" : {"egammas" : ["pt", "truthOrigin", "truthType", "passid_
 
 optimizer_kwargs_dict = {"type" : {"lr" : 1e-4, "betas" : (0.9, 0.999), "eps" : 1e-07, "weight_decay" : 1e-4},
                          "isolation" : {"lr" : 1e-4, "betas" : (0.9, 0.999), "eps" : 1e-07, "weight_decay" : 1e-4},
-                         "pt" : {"lr" : 1e-5, "betas" : (0.85, 0.95), "eps" : 1e-07, "weight_decay" : 1e-4},
+                         "pt" : {"lr" : 1e-3, "betas" : (0.85, 0.95), "eps" : 1e-07, "weight_decay" : 1e-4},
                          "eta" : {"lr" : 1e-4, "betas" : (0.9, 0.999), "eps" : 1e-07, "weight_decay" : 1e-4},
                          "phi" : {"lr" : 1e-4, "betas" : (0.9, 0.999), "eps" : 1e-07, "weight_decay" : 1e-4},
                          "origin" : {"lr" : 1e-4, "betas" : (0.9, 0.999), "eps" : 1e-07, "weight_decay" : 1e-4},

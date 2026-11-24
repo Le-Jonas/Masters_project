@@ -404,6 +404,7 @@ class LogCoshLoss(torch.nn.Module):
         losses = (
             residual
             + F.softplus(-2.0 * residual)
+            - torch.log(torch.tensor(2.0, device=outputs.device))
         )
 
         if self.reduction == "mean":
