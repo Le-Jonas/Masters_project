@@ -60,7 +60,7 @@ def _train():
                 norm_target = norm_target,
                 gev_target = gev_target,
                 pin_memory = False,
-                num_epochs = 25,
+                num_epochs = 15,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
@@ -250,7 +250,7 @@ def _write(write_string):
                 valid_fields = valid_fields,
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
-                sample_size = 20_000,
+                sample_size = 50_000,
                 y_field = y_field,
                 fallback_field = fallback_field,
             )
@@ -416,7 +416,7 @@ if __name__ == "__main__":
 
     time_start = time.perf_counter()
     _train()
-    _write("model_to_csv")
+    #_write("data_to_subset")
     #_plot("pseudo_roc_plot")
     #_test(100)
     time_end = time.perf_counter()

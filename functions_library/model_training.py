@@ -1114,7 +1114,8 @@ def compressed_training_function(
         domain_adversary = None
         gradient_reversal = None
         optimizer = optimizer_class(list(model.parameters()), **optimizer_kwargs)
-    print(optimizer_kwargs)
+    print(f"Model parameters: {model_kwargs}")
+    print(f"Optimizer parameters: {optimizer_kwargs}")
     train_losses, val_losses = train_model(model, 
                                            optimizer, 
                                            loss_function, 
