@@ -474,14 +474,14 @@ def get_std_plot(
     - stds: An array containing the standard deviation of the predictions for each threshold.
     - thresholds: An array containing the prediction thresholds.
     """
-    quantiles = np.linspace(0.05, 0.95, std_bins + 1)
-    quantile_values = np.quantile(std_predictions, quantiles)
-
     predictions = predictions[truth_origin]
     std_predictions = std_predictions[truth_origin]
 
-    def fit_pdf(x, bw_width, sigma_cb, alpha_cb, n_cb):
-        return true_data_fit(x, 1, 91.188, bw_width, sigma_cb, alpha_cb, n_cb, 0, x_range=(bins[0], bins[-1]))
+    quantiles = np.linspace(0.05, 0.95, std_bins + 1)
+    quantile_values = np.quantile(std_predictions, quantiles)
+
+    def fit_pdf(x, bw_mass, bw_width, sigma_cb, alpha_cb, n_cb):
+        return true_data_fit(x, 1, bw_mass, bw_width, sigma_cb, alpha_cb, n_cb, 0, x_range=(bins[0], bins[-1]))
 
     observed_stds = []
     binned_stds = []
@@ -494,14 +494,16 @@ def get_std_plot(
         else:
             mask = (std_predictions > last_quantile) & (std_predictions <= quantile)
         binned_predictions = predictions[mask]
-        quant_mid = (quantile-last_quantile)/2
-        guess = [quant_mid, 0.1, 1.5, 0.8]
+        quant_mid = (quantile+last_quantile)/2
+        guess = [91.188, quant_mid, 0.1, 1.5, 0.8]
         save_path = f"{plotting_path}/std_fit/quantile_{quant_mid:.2f}.png" if plotting_path is not None else None
 
-        fitted_params = fit_function(binned_predictions, bins, fit_pdf, initial_guess=guess, limits=[(0.0, 20.0), (0.0, 5.0), (0.0, 5.0), (0.0, 10.0)], save_path=save_path)
-        fitted_bw_width_n_error = [fitted_params[0][0], fitted_params[1][0]]
+        fitted_params = fit_function(binned_predictions, bins, fit_pdf, initial_guess=guess, limits=[(80.0, 110.0), (0.0, 20.0), (0.0, 5.0), (0.0, 5.0), (0.0, 10.0)], save_path=save_path, infobox = False)
+        fitted_bw_width_n_error = [fitted_params[0][1], fitted_params[1][1]]
         observed_stds.append(fitted_bw_width_n_error)
-        binned_stds.append([quant_mid, quantile - quant_mid])
+        binned_stds.append([quant_mid, quant_mid - last_quantile])
+        last_quantile = quantile
+
     observed_stds = np.array(observed_stds)
     binned_stds = np.array(binned_stds)
 

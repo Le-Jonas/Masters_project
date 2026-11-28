@@ -60,7 +60,7 @@ def _h5_files_from_path(path : str | Path) -> list[Path]:
         return sorted(file for file in path.iterdir() if file.is_file() and file.suffix == ".h5")
     raise FileNotFoundError(f"H5 path does not exist: {path}")
 
-def _compute_z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndarray[np.float64], phi1 : float | np.ndarray[np.float64], pt2 : float | np.ndarray[np.float64], eta2 : float | np.ndarray[np.float64], phi2 : float | np.ndarray[np.float64], e1 : float | np.ndarray[np.float64] | None = None, e2 : float | np.ndarray[np.float64] | None = None) -> float | np.ndarray[np.float64]:
+def compute_z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndarray[np.float64], phi1 : float | np.ndarray[np.float64], pt2 : float | np.ndarray[np.float64], eta2 : float | np.ndarray[np.float64], phi2 : float | np.ndarray[np.float64], e1 : float | np.ndarray[np.float64] | None = None, e2 : float | np.ndarray[np.float64] | None = None) -> float | np.ndarray[np.float64]:
     """
     Given the transverse momentum (pt), pseudorapidity (eta), azimuthal angle (phi), and energy (e) of two particles, compute the invariant mass of the Z boson formed by these two particles.
 
@@ -84,7 +84,7 @@ def _compute_z_mass(pt1 : float | np.ndarray[np.float64], eta1 : float | np.ndar
     z_mass = np.sqrt(np.abs((e1 + e2)**2 - (px1 + px2)**2 - (py1 + py2)**2 - (pz1 + pz2)**2))
     return z_mass
 
-def _compute_z_mass_with_error(p1_data : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p1_error : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p2_data : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p2_error : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+def compute_z_mass_with_error(p1_data : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p1_error : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p2_data : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], p2_error : tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     """
     Given the transverse momentum (pt), pseudorapidity (eta), azimuthal angle (phi), and energy (e) of two particles along with their respective errors, compute the invariant mass of the Z boson formed by these two particles and propagate the errors to estimate the uncertainty in the Z boson mass.
 
@@ -98,10 +98,17 @@ def _compute_z_mass_with_error(p1_data : tuple[np.ndarray, np.ndarray, np.ndarra
     - z_mass: An array of invariant masses of the Z boson formed by the particle pairs.
     - z_mass_error: An array of propagated errors corresponding to the Z boson masses.
     """
-    pt1, eta1, phi1, e1 = p1_data
-    pt2, eta2, phi2, e2 = p2_data
-    pt1_err, eta1_err, phi1_err, e1_err = p1_error
-    pt2_err, eta2_err, phi2_err, e2_err = p2_error
+    try:
+        pt1, eta1, phi1, e1 = p1_data
+        pt2, eta2, phi2, e2 = p2_data
+        pt1_err, eta1_err, phi1_err, e1_err = p1_error
+        pt2_err, eta2_err, phi2_err, e2_err = p2_error
+    except ValueError:
+        pt1, eta1, phi1 = p1_data
+        pt2, eta2, phi2 = p2_data
+        pt1_err, eta1_err, phi1_err = p1_error
+        pt2_err, eta2_err, phi2_err = p2_error
+        e1, e2 = None, None
 
     if e1 is None or e2 is None:
         e1 = pt1 * np.cosh(eta1)
@@ -238,7 +245,7 @@ def _find_predicted_Z_masses(files : list[str], models : dict[str, torch.nn.Modu
     phi2 = prediction_dict["phi"][:, 2]
     e2 = prediction_dict["e"][:, 2]
 
-    z_masses = _compute_z_mass(pt1, eta1, phi1, pt2, eta2, phi2, e1 = e1, e2 = e2)
+    z_masses = compute_z_mass(pt1, eta1, phi1, pt2, eta2, phi2, e1 = e1, e2 = e2)
     return z_masses
 
 
@@ -253,7 +260,7 @@ def _load_z_masses_from_files(z_masses_path : list[Path], dataloader_kwargs : di
     z_masses = []
     expected_batches = len(dataloader)
     for batch, target in enumerate(dataloader):
-        z_masses.append(_compute_z_mass(target[:, 0, 0], target[:, 0, 1], target[:, 0, 2], target[:, 1, 0], target[:, 1, 1], target[:, 1, 2], e1 = target[:, 0, 3], e2 = target[:, 1, 3]))
+        z_masses.append(compute_z_mass(target[:, 0, 0], target[:, 0, 1], target[:, 0, 2], target[:, 1, 0], target[:, 1, 1], target[:, 1, 2], e1 = target[:, 0, 3], e2 = target[:, 1, 3]))
         print(200*" ", end='\r')  # Clear the line
         print(f"Getting Z masses with batch {batch + 1}/{expected_batches}", end='\r')
     print(200*" ", end='\r')  # Clear the line
@@ -457,7 +464,7 @@ def compute_target_mean_std(dataset : Dataset, sample_size : int = 100_000, batc
                         "z_target requires pair targets with shape "
                         f"[batch, 2, 3|4], got {tuple(targets.shape)}"
                     )
-            targets = _compute_z_mass(
+            targets = compute_z_mass(
                 targets[:, 0, 0],
                 targets[:, 0, 1],
                 targets[:, 0, 2],
@@ -628,7 +635,7 @@ def find_Z_peak(
                 for rows in (first_rows, second_rows)
                 for field in ("pt", "eta", "phi", "e")
             ]
-            z_masses.extend(_compute_z_mass(
+            z_masses.extend(compute_z_mass(
                 values[0], values[1], values[2], 
                 values[4], values[5], values[6], 
                 e1 = values[3], e2 = values[7]
@@ -805,7 +812,7 @@ def find_Z_peak_pairs(
                     for rows in (first_rows, second_rows)
                     for field in ("pt", "eta", "phi", "e")
                 ]
-                z_masses.extend(_compute_z_mass(
+                z_masses.extend(compute_z_mass(
                     values[0], values[1], values[2], 
                     values[4], values[5], values[6], 
                     e1 = values[3], e2 = values[7],

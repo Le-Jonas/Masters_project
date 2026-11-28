@@ -311,7 +311,7 @@ def _prepare_training_inputs(data: tuple[torch.Tensor, ...],
         pt_eta_phi = targets[:, :, 1:4]
         targets = targets[:, :, 0]
 
-        z_masses = misc_functions._compute_z_mass(pt_eta_phi[:, 0, 0], pt_eta_phi[:, 0, 1], pt_eta_phi[:, 0, 2], pt_eta_phi[:, 1, 0], pt_eta_phi[:, 1, 1], pt_eta_phi[:, 1, 2])
+        z_masses = misc_functions.compute_z_mass(pt_eta_phi[:, 0, 0], pt_eta_phi[:, 0, 1], pt_eta_phi[:, 0, 2], pt_eta_phi[:, 1, 0], pt_eta_phi[:, 1, 1], pt_eta_phi[:, 1, 2])
         z_mass_mask = abs(z_masses/1000.0 - 91.2) < 10.0
         z_mass_mask = z_mass_mask.to(dtype=torch.float32)
         targets[domain_targets == 1, 0], targets[domain_targets == 1, 1] = z_mass_mask[domain_targets == 1], z_mass_mask[domain_targets == 1]
@@ -341,7 +341,7 @@ def _prepare_training_inputs(data: tuple[torch.Tensor, ...],
         targets = targets[:, :, 0]
         targets = _prepare_binary_targets(targets, domain_targets, binary_value, domain = domain)
 
-        z_masses = misc_functions._compute_z_mass(pt_eta_phi[:, 0, 0], pt_eta_phi[:, 0, 1], pt_eta_phi[:, 0, 2], pt_eta_phi[:, 1, 0], pt_eta_phi[:, 1, 1], pt_eta_phi[:, 1, 2])
+        z_masses = misc_functions.compute_z_mass(pt_eta_phi[:, 0, 0], pt_eta_phi[:, 0, 1], pt_eta_phi[:, 0, 2], pt_eta_phi[:, 1, 0], pt_eta_phi[:, 1, 1], pt_eta_phi[:, 1, 2])
         z_mass_mask = (abs(z_masses/1000.0 - 91.2) < 50.0) | (abs(z_masses/1000.0 - 91.2) > 10.0) | (domain_targets == 0)
 
         inputs = inputs[0][z_mass_mask], inputs[1][z_mass_mask]
@@ -466,7 +466,8 @@ def train_model(
         mask_model : torch.nn.Module | None = None,
         variance_target : torch.nn.Module | None = None,
         z_pid : tuple[bool, torch.nn.Module, torch.nn.Module] = (False, None, None),
-        verbosity : int = 1
+        verbosity : int = 1,
+        epoch_callback : Callable[[int, float], None] | None = None,
 
     ) -> tuple[torch.nn.Module, list, list]:
     """
@@ -694,6 +695,8 @@ def train_model(
                 torch.save(best_model_state, periodic_save_path)
                 if verbosity > -1:
                     print(f"Model saved at epoch {epoch + 1} to {periodic_save_path}")
+        if epoch_callback is not None:
+            epoch_callback(epoch, min(val_losses))
 
     # Load the best model state before returning
     if best_model_state is not None:
@@ -957,11 +960,12 @@ def compressed_training_function(
     periodic_save_interval : int | None = None,
     periodic_save_path : str | None = None,
     use_mask : bool | str = False,
-    variance_target : torch.nn.Module | None = None,
+    variance_target : str | bool = False,
     means_library_path : str | Path = "./means_library",
     z_pid : tuple[bool, str, str] = (False, "", ""),
     npy_training : bool | Path = False,
-    verbosity : int = 1
+    verbosity : int = 1,
+    epoch_callback : Callable[[int, float], None] | None = None,
 ) -> tuple[torch.nn.Module, list, list]:
     train_size_egam = int((1 - validation_split) * len(h5_files))
     train_size_data = int((1 - validation_split) * len(mix_files))
@@ -1087,6 +1091,18 @@ def compressed_training_function(
     else:
         model = use_old_model.to(device)
 
+    if variance_target:
+        from functions_library.models_dicts import model_kwargs_dict
+        variance_model_kwargs = model_kwargs_dict["pt"]
+        variance_model = neural_models.ParticleOriginNetwork(
+            particle_size,
+            event_size,
+            **variance_model_kwargs
+        ).to(device)
+        variance_model.load_state_dict(torch.load(variance_target, map_location=device))
+    else:
+        variance_model = None
+
 
 
     if use_mask is not False and use_mask is not None:
@@ -1140,8 +1156,9 @@ def compressed_training_function(
                                            periodic_save_interval = periodic_save_interval,
                                            periodic_save_path = periodic_save_path,
                                            mask_model = mask_model,
-                                           variance_target = variance_target,
+                                           variance_target = variance_model,
                                            z_pid = (z_pid[0], type_model, isolation_model) if z_pid[0] else (False, None, None),
                                            verbosity = verbosity,
+                                           epoch_callback = epoch_callback,
                                            )
     return model, train_losses, val_losses, means, stds, norm_target

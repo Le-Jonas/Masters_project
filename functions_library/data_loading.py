@@ -1033,18 +1033,18 @@ def models_to_csv_files(models_path : Path | str,
                     print("Required CSV files for z mass calculation not found. Skipping z mass calculation.")
                     continue
 
-                p1_mc = np.column_stack((pt_predictions_mc[:, 0], eta_truth_mc[:, 0], phi_truth_mc[:, 0]))
-                p1_mc_err = np.column_stack((mc_pair_predictions[:, 0], np.zeros_like(eta_truth_mc[:, 0]), np.zeros_like(phi_truth_mc[:, 0]))) #Assumes 0 error for eta and phi, as error is dominated by pt error
-                p2_mc = np.column_stack((pt_predictions_mc[:, 1], eta_truth_mc[:, 1], phi_truth_mc[:, 1]))
-                p2_mc_err = np.column_stack((mc_pair_predictions[:, 1], np.zeros_like(eta_truth_mc[:, 1]), np.zeros_like(phi_truth_mc[:, 1])))
+                p1_mc = (pt_predictions_mc[:, 0], eta_truth_mc[:, 0], phi_truth_mc[:, 0])
+                p1_mc_err = (mc_pair_predictions[:, 0], np.zeros_like(eta_truth_mc[:, 0]), np.zeros_like(phi_truth_mc[:, 0])) #Assumes 0 error for eta and phi, as error is dominated by pt error
+                p2_mc = (pt_predictions_mc[:, 1], eta_truth_mc[:, 1], phi_truth_mc[:, 1])
+                p2_mc_err = (mc_pair_predictions[:, 1], np.zeros_like(eta_truth_mc[:, 1]), np.zeros_like(phi_truth_mc[:, 1]))
 
-                p1_data = np.column_stack((pt_predictions_data[:, 0], eta_atlas_data[:, 0], phi_atlas_data[:, 0]))
-                p1_data_err = np.column_stack((data_pair_predictions[:, 0], np.zeros_like(eta_atlas_data[:, 0]), np.zeros_like(phi_atlas_data[:, 0])))
-                p2_data = np.column_stack((pt_predictions_data[:, 1], eta_atlas_data[:, 1], phi_atlas_data[:, 1]))
-                p2_data_err = np.column_stack((data_pair_predictions[:, 1], np.zeros_like(eta_atlas_data[:, 1]), np.zeros_like(phi_atlas_data[:, 1])))
+                p1_data = (pt_predictions_data[:, 0], eta_atlas_data[:, 0], phi_atlas_data[:, 0])
+                p1_data_err = (data_pair_predictions[:, 0], np.zeros_like(eta_atlas_data[:, 0]), np.zeros_like(phi_atlas_data[:, 0]))
+                p2_data = (pt_predictions_data[:, 1], eta_atlas_data[:, 1], phi_atlas_data[:, 1])
+                p2_data_err = (data_pair_predictions[:, 1], np.zeros_like(eta_atlas_data[:, 1]), np.zeros_like(phi_atlas_data[:, 1]))
 
-                z_pair_mc = _misc_._compute_z_mass_with_error(p1_mc, p1_mc_err, p2_mc, p2_mc_err)
-                z_pair_data = _misc_._compute_z_mass_with_error(p1_data, p1_data_err, p2_data, p2_data_err)
+                z_pair_mc = _misc_.compute_z_mass_with_error(p1_mc, p1_mc_err, p2_mc, p2_mc_err)
+                z_pair_data = _misc_.compute_z_mass_with_error(p1_data, p1_data_err, p2_data, p2_data_err)
 
                 np.savetxt(csv_path / "z_pair_predictions_mc.csv", z_pair_mc[0][:max_rows], delimiter=",")
                 np.savetxt(csv_path / "z_logvar_pair_predictions_mc.csv", z_pair_mc[1][:max_rows], delimiter=",")
@@ -1186,9 +1186,9 @@ def datasets_to_csv_files(
     for i in range(len(data_variables_pair)):
         data_variables_pair[i] = electron_predictions_to_pair_predictions(data_variables[i], data_dataset, data_pair_dataset)
 
-    z_mass_truth_mc = _misc_._compute_z_mass(mc_variables_pair[0][:, 0], mc_variables_pair[1][:, 0], mc_variables_pair[2][:, 0], mc_variables_pair[0][:, 1], mc_variables_pair[1][:, 1], mc_variables_pair[2][:, 1])
-    z_mass_atlas_mc = _misc_._compute_z_mass(mc_variables_pair[6][:, 0], mc_variables_pair[7][:, 0], mc_variables_pair[8][:, 0], mc_variables_pair[6][:, 1], mc_variables_pair[7][:, 1], mc_variables_pair[8][:, 1])
-    z_mass_atlas_data = _misc_._compute_z_mass(data_variables_pair[0][:, 0], data_variables_pair[1][:, 0], data_variables_pair[2][:, 0], data_variables_pair[0][:, 1], data_variables_pair[1][:, 1], data_variables_pair[2][:, 1])
+    z_mass_truth_mc = _misc_.compute_z_mass(mc_variables_pair[0][:, 0], mc_variables_pair[1][:, 0], mc_variables_pair[2][:, 0], mc_variables_pair[0][:, 1], mc_variables_pair[1][:, 1], mc_variables_pair[2][:, 1])
+    z_mass_atlas_mc = _misc_.compute_z_mass(mc_variables_pair[6][:, 0], mc_variables_pair[7][:, 0], mc_variables_pair[8][:, 0], mc_variables_pair[6][:, 1], mc_variables_pair[7][:, 1], mc_variables_pair[8][:, 1])
+    z_mass_atlas_data = _misc_.compute_z_mass(data_variables_pair[0][:, 0], data_variables_pair[1][:, 0], data_variables_pair[2][:, 0], data_variables_pair[0][:, 1], data_variables_pair[1][:, 1], data_variables_pair[2][:, 1])
 
     origin_atlas_mc = (abs(z_mass_atlas_mc/1000.0 - 91.2) < 100.0) & (((mc_variables_pair[4][:, 0]) == 1 & (mc_variables_pair[6][:, 0]/1000.0 > 25.0)) | ((mc_variables_pair[4][:, 1]) == 1 & (mc_variables_pair[6][:, 1]/1000.0 > 25.0)))
     origin_atlas_data = (abs(z_mass_atlas_data/1000.0 - 91.2) < 100.0) & (((data_variables_pair[3][:, 0] == 1) & (data_variables_pair[0][:, 0]/1000.0 > 25.0)) | ((data_variables_pair[3][:, 1] == 1) & (data_variables_pair[0][:, 1]/1000.0 > 25.0)))

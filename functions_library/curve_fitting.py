@@ -15,6 +15,7 @@ def fit_function(
     limits : ArrayLike | None = None,
     save_path : str | None = None,
     data_truth : tuple[ArrayLike, ArrayLike] | None = None,
+    infobox : bool = True,
 ) -> tuple[ArrayLike, ArrayLike, float]:
     """
     Fit a function to a histogram of data.
@@ -118,18 +119,18 @@ def fit_function(
             inset.set_ylabel("Count")
 
         P_chi2 = 1 - chi2.cdf(minimizer.fval, df=np.sum(fit_mask) - len(initial_guess))
+        if infobox:
+            info = (
+                f"N_sig = {int(minimizer.values[0] * len(data)):d} ± {int(minimizer.errors[0] * len(data)):d}\n"
+                f"N_bkg = {int((1 - minimizer.values[0]) * len(data)):d} ± {int((1 - minimizer.values[0]) * len(data) * minimizer.errors[0]):d}\n"
+                f"Sigma (CB) = {minimizer.values[1]:.2f} ± {minimizer.errors[1]:.4f}\n"
+                f"Alpha (CB) = {minimizer.values[2]:.2f} ± {minimizer.errors[2]:.4f}\n"
+                f"n (CB) = {minimizer.values[3]:.2f} ± {minimizer.errors[3]:.4f}\n"
+                f"Decay Constant = {minimizer.values[4]:.2f} ± {minimizer.errors[4]:.4f}\n"
+                f"P(χ^2 = {minimizer.fval:.2f}, N_df = {np.sum(fit_mask) - len(initial_guess)}) = {P_chi2:.4f}"
+            )
 
-        info = (
-            f"N_sig = {int(minimizer.values[0] * len(data)):d} ± {int(minimizer.errors[0] * len(data)):d}\n"
-            f"N_bkg = {int((1 - minimizer.values[0]) * len(data)):d} ± {int((1 - minimizer.values[0]) * len(data) * minimizer.errors[0]):d}\n"
-            f"Sigma (CB) = {minimizer.values[1]:.2f} ± {minimizer.errors[1]:.4f}\n"
-            f"Alpha (CB) = {minimizer.values[2]:.2f} ± {minimizer.errors[2]:.4f}\n"
-            f"n (CB) = {minimizer.values[3]:.2f} ± {minimizer.errors[3]:.4f}\n"
-            f"Decay Constant = {minimizer.values[4]:.2f} ± {minimizer.errors[4]:.4f}\n"
-            f"P(χ^2 = {minimizer.fval:.2f}, N_df = {np.sum(fit_mask) - len(initial_guess)}) = {P_chi2:.4f}"
-        )
-
-        ax.text(0.95, 0.95, info, transform=ax.transAxes, fontsize=10, va='top', ha='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='black'))
+            ax.text(0.95, 0.95, info, transform=ax.transAxes, fontsize=10, va='top', ha='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='black'))
     
         _plotting_.save_plot(save_path, fig)
         plt.close()

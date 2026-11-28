@@ -13,30 +13,52 @@ def _find_h5_files(base_string: str ) -> tuple:
     return h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam
 
 
-def _train():
+
+def _train(n_epoch : int, save_model : bool = True, trial = None):
+    global npy_lr_modify
     # Choose two folders from the same particle type and simulation category.
     base_string = f"C:/Users/jonas/{system_string}/Main/h5/"
     h5_files_egam1, h5_files_egam7, h5_files_data, h5_files_egam = _find_h5_files(base_string)
 
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
 
-    for variable in variables:
-        dataset_class = dataset_classes.ZPairDataset if variable in ["z", "origin", "origin-all"] else dataset_classes.H5EgammaDataset
-        nn_model = neural_models.ParticlePairNetwork if variable in ["z", "origin", "origin-all"] else neural_models.ParticleOriginNetwork
-        loss_class = torch.nn.BCEWithLogitsLoss() if variable in ["origin", "origin-all", "type", "isolation"] else training_classes.AngularMSELoss() if variable in ["phi"] else training_classes.LogCoshLoss() if variable in ["z", "pt"] else torch.nn.MSELoss()
-        if variable in ["pt", "eta", "phi"]:
-            variance_loss_class = training_classes.AngularGaussianVarianceNLLLoss() if variable in ["phi"] else training_classes.RobustGaussianVarianceNLLLoss() if variable in ["pt"] else training_classes.GaussianVarianceNLLLoss()
+    epoch_callback = None
+    if trial is not None:
+        def epoch_callback(epoch, best_val_loss):
+            trial.report(best_val_loss, step=epoch)
+            if trial.should_prune():
+                raise opt.TrialPruned()
 
-        field = [["truthOrigin", "pt", "eta", "phi"], ["passid_Loose", "pt", "eta", "phi"]] if variable in ["origin", "origin-all"] else [["truthType", "passid_VeryLoose"], ["passid_Medium", "passid_VeryLoose"]] if variable == "type" else ["passiso_Loose_VarRad", "passiso_Loose_VarRad"] if variable == "isolation" else [["pt", "eta", "phi"], ["pt", "eta", "phi"]] if variable == "z" else [[variable, "truthType"], [variable, "passid_Tight"]]
+    for variable in variables:
+        dataset_class = variable_kwargs_dict[variable]["dataset"]
+        nn_model = variable_kwargs_dict[variable]["nn_model"]
+        loss_class = variable_kwargs_dict[variable]["loss_function"]
+        binary_target = variable_kwargs_dict[variable]["binary_target"]
+        norm_target = variable_kwargs_dict[variable]["norm_target"]
+        gev_target = variable_kwargs_dict[variable]["gev_target"]
+        field = variable_kwargs_dict[variable]["y_field"]
+        try:
+            logvar_name = variable.split("_")[1]
+            if logvar_name == "logvar":
+                variance_target = "./models_library/model_pt.pth"
+        except IndexError:
+            variance_target = False
+
+
         model_kwargs = model_kwargs_dict[variable]
         optimizer_kwargs = optimizer_kwargs_dict[variable]
-        binary_target = 13 if variable in ["origin", "origin-all"] else 2 if variable == "type" else 1 if variable == "isolation" else False
-        norm_target = True if variable in ["origin"] else False
-        gev_target = True if variable in ["z", "pt"] else False
         z_target = True if variable == "z" else False
-        use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi"] else False
+        use_mask = "./models_library/model_type.pth" if variable in ["pt", "eta", "phi", "pt_logvar"] else False
 
+        if npy_training is not None:
+            if npy_lr_modify:
+                optimizer_kwargs["lr"] *= 100
+                npy_lr_modify = False
+
+    
         variable_name = "pair_" + variable if variable in ["z", "origin", "origin-all"] else variable
+        periodic_save_interval = 4 if save_model else None
+        periodic_save_path = f"./models_library/model_{variable_name}.pth" if save_model else None
         if variable != "origin":
             model, train_losses, val_losses, _, _, _ = model_training.compressed_training_function(
                 h5_files = h5_files_egam,
@@ -48,8 +70,8 @@ def _train():
                 loss_function = loss_class,
                 optimizer_class = torch.optim.Adam,
                 optimizer_kwargs = optimizer_kwargs,
-                batch_size = 2048,
-                num_workers = 7,
+                batch_size = 4096,
+                num_workers = 0,
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
                 y_field = field[0],
@@ -60,7 +82,7 @@ def _train():
                 norm_target = norm_target,
                 gev_target = gev_target,
                 pin_memory = False,
-                num_epochs = 15,
+                num_epochs = n_epoch,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
@@ -68,64 +90,20 @@ def _train():
                 mixed_target_loss_weight = 1.0,
                 domain_input = True,
                 domain = "bool",
-                periodic_save_interval = 4,
-                periodic_save_path = f"./models_library/model_{variable_name}.pth",
+                periodic_save_interval = periodic_save_interval,
+                periodic_save_path = periodic_save_path,
                 means_library_path = f"./means_library",
                 use_mask = use_mask,
                 npy_training = npy_training,
                 verbosity = 1,
+                variance_target = variance_target,
+                prefetch_factor = None,
+                persistent_workers = False,
+                epoch_callback = epoch_callback,
             )
-            torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
+            if save_model:
+                torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
 
-            if variable in ["pt", "eta", "phi"] and False:
-                model_var, train_losses_var, val_losses_var, _, _, _ = model_training.compressed_training_function(
-                    h5_files = h5_files_egam,
-                    mix_files = h5_files_data,
-                    mixture_ratio = 0.66,
-                    dataset_class = dataset_class,
-                    nn_model = nn_model,
-                    model_kwargs = model_kwargs,
-                    loss_function = variance_loss_class,
-                    optimizer_class = torch.optim.Adam,
-                    optimizer_kwargs = optimizer_kwargs,
-                    batch_size = 2048,
-                    num_workers = 7,
-                    exclude_features = ["truth"],
-                    exclude_fields = valid_fields,
-                    y_field = field[0],
-                    fallback_field = field[1],
-                    valid_fields = valid_fields,
-                    binary_target = binary_target,
-                    z_target = z_target,
-                    norm_target = norm_target,
-                    gev_target = gev_target,
-                    pin_memory = False,
-                    num_epochs = 15,
-                    #domain_adversary = True,
-                    #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
-                    #domain_loss_weight = 0.05,
-                    #gradient_reversal_strength = 0.50,
-                    mixed_target_loss_weight = 1.0,
-                    domain_input = True,
-                    domain = "bool",
-                    periodic_save_interval = 4,
-                    periodic_save_path = f"./models_library/model_{variable_name}_logvar.pth",
-                    npy_training = npy_training,
-                    use_mask = use_mask,
-                    means_library_path = f"./means_library",
-                    variance_target = model
-                )
-                torch.save(model_var.state_dict(), f"./models_library/model_{variable_name}_logvar.pth")
-
-                fig = plt.figure(figsize=(10, 6))
-                plt.plot(np.arange(len(train_losses_var)), train_losses_var, label="Training Loss")
-                plt.plot(np.arange(len(val_losses_var)), val_losses_var, label="Validation Loss")
-                plt.xlabel("Epoch")
-                plt.ylabel("Loss")
-                plt.title(f"Training and Validation Loss for {variable_name}")
-                plt.legend()
-                plotting_funcs.save_plot(f"./plots/{date.today()}/loss_plot_{variable_name}_logvar.png", fig)
-                plt.close()
         else:
             model, train_losses, val_losses, _, _, _ = model_training.compressed_training_function(
                 h5_files = h5_files_egam,
@@ -138,7 +116,7 @@ def _train():
                 optimizer_class = torch.optim.Adam,
                 optimizer_kwargs = optimizer_kwargs,
                 batch_size = 2048,
-                num_workers = 7,
+                num_workers = 6,
                 exclude_features = ["truth"],
                 exclude_fields = valid_fields,
                 y_source = "egammas",
@@ -149,20 +127,22 @@ def _train():
                 z_target = z_target,
                 norm_target = norm_target,
                 pin_memory = False,
-                num_epochs = 5,
+                num_epochs = n_epoch,
                 #domain_adversary = True,
                 #domain_loss_function = torch.nn.BCEWithLogitsLoss(),
                 #domain_loss_weight = 0.05,
                 #gradient_reversal_strength = 0.50,
                 mixed_target_loss_weight = 1.0,
                 domain_input = True,
-                periodic_save_interval = 4,
-                periodic_save_path = f"./models_library/model_{variable_name}.pth",
+                periodic_save_interval = periodic_save_interval,
+                periodic_save_path = periodic_save_path,
                 means_library_path = f"./means_library",
-                z_pid = (True, f"./models_library/model_type.pth", f"./models_library/model_isolation.pth")
+                z_pid = (True, f"./models_library/model_type.pth", f"./models_library/model_isolation.pth"),
+                epoch_callback = epoch_callback,
             )            
 
-            torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
+            if save_model:
+                torch.save(model.state_dict(), f"./models_library/model_{variable_name}.pth")
 
         fig = plt.figure(figsize=(10, 6))
         plt.plot(np.arange(len(train_losses)), train_losses, label="Training Loss")
@@ -174,6 +154,7 @@ def _train():
         plotting_funcs.save_plot(f"./plots/{date.today()}/loss_plot_{variable_name}.png", fig)
         plt.close()
     print("Training completed successfully.")
+    return min(val_losses)
 
 def _write(write_string):
     base_string = f"C:/Users/jonas/{system_string}/Main/h5/"
@@ -189,7 +170,7 @@ def _write(write_string):
     subset_path = Path("./subset_library")
     subset_path.mkdir(parents=True, exist_ok=True)
     valid_fields = {"egammas": ["pt", "eta", "phi", "e", "truthOrigin", "truthType", "passid_VeryLoose", "passid_Loose", "passid_Medium", "passid_Tight", "passiso_Loose_VarRad"], "truth": ["pt", "eta", "phi"]}
-    model_configs = {"z" : [False, True], "pt" : [False, True], "eta" : [False, False], "phi" : [False, False], "origin" : [False, False], "type" : [False, False], "isolation" : [False, False]}
+    model_configs = {"z" : [False, True], "pt" : [False, True], "logvar" : [False, True], "eta" : [False, False], "phi" : [False, False], "origin" : [False, False], "type" : [False, False], "isolation" : [False, False]}
     if write_string == "model_to_csv":
         data_loading.models_to_csv_files(
             models_path,
@@ -241,8 +222,8 @@ def _write(write_string):
     if write_string == "data_to_subset":
         file_lists = [[h5_files_egam1, "sig"], [h5_files_egam7, "bkg"], [h5_files_data, "data"]]
         for list in file_lists:
-            y_field = ["pt", "truthType"]
-            fallback_field = ["pt", "passid_Tight"]
+            y_field = ["passiso_Loose_VarRad"]
+            fallback_field = ["passiso_Loose_VarRad"]
             data_loading.save_data_subset(
                 list[0],
                 subset_path,
@@ -255,6 +236,7 @@ def _write(write_string):
                 fallback_field = fallback_field,
             )
     print("Writing completed successfully.")
+    return 1
 
 def _plot(write_string : str):
     if write_string == "pseudo_roc_plot":
@@ -397,28 +379,145 @@ def _test(test_length: int):
     time_end = time.perf_counter()
     print(f"Time taken to train on {test_length} batches: {time_end - time_start:.2f} seconds")
     print(f"Testing completed successfully.")
+    return 1
+
+def _optimize(n_trials: int):
+
+    if len(variables) != 1:
+        raise ValueError("Hyperparameter optimization is only supported for a single variable at a time.")
+    global npy_lr_modify
+
+    def objective(trial):
+        global npy_lr_modify
+        # Define the hyperparameter search space
+        if True:
+            learning_rate = trial.suggest_float('learning_rate', 1e-8, 1e-3, log=True)
+            #beta1 = trial.suggest_float('beta1', 0.25, 1.0)
+            #beta2 = trial.suggest_float('beta2', 0.50, 1.0)
+            #weight_decay = trial.suggest_float('weight_decay', 1e-8, 1e-1, log=True)
+
+            optimizer_kwargs_dict[variables[0]]["lr"] = learning_rate
+            #optimizer_kwargs_dict[variables[0]]["betas"] = (beta1, beta2)
+            #optimizer_kwargs_dict[variables[0]]["weight_decay"] = weight_decay
+
+            npy_lr_modify = True
+
+        if False:
+            particle_hidden_sizes = trial.suggest_int('particle_hidden_sizes', 64, 512, step=64)
+            event_hidden_sizes = trial.suggest_int('event_hidden_sizes', 8, 64, step=8)
+            consolidation_hidden_sizes = trial.suggest_int('consolidation_hidden_sizes', 32, min(256, particle_hidden_sizes//2), step=32)
+            particle_hidden_length = trial.suggest_int('particle_hidden_length', 1, 6)
+            event_hidden_length = trial.suggest_int('event_hidden_length', 1, 3)
+            consolidation_hidden_length = trial.suggest_int('consolidation_hidden_length', 1, 5)
+
+            model_kwargs_dict[variables[0]]["particle_hidden_sizes"] = [1024] + [particle_hidden_sizes] * particle_hidden_length + [particle_hidden_sizes // 2] * 2
+            model_kwargs_dict[variables[0]]["event_hidden_sizes"] = [64] + [event_hidden_sizes] * event_hidden_length + [event_hidden_sizes // 4]
+            model_kwargs_dict[variables[0]]["consolidation_hidden_sizes"] = [consolidation_hidden_sizes] * consolidation_hidden_length + [8]
+
+        
+        return _train(15, save_model = False, trial=trial)
+
+    study = opt.create_study(
+        direction='minimize',
+        pruner=opt.pruners.MedianPruner(
+            n_startup_trials=5,
+            n_warmup_steps=3,
+        ),
+    )
+    study.optimize(objective, n_trials=n_trials)
+
+    completed_trials = [
+        trial for trial in study.trials
+        if trial.state == opt.trial.TrialState.COMPLETE and trial.value is not None
+    ]
+    top_trials = sorted(completed_trials, key=lambda trial: trial.value)[:3]
+    if not top_trials:
+        raise RuntimeError("No Optuna trials completed successfully.")
+
+    top_results = [
+        {
+            "rank": rank,
+            "trial_number": trial.number,
+            "value": trial.value,
+            "params": trial.params,
+        }
+        for rank, trial in enumerate(top_trials, start=1)
+    ]
+    results_path = Path("./optuna_results") / f"top3_{variables[0]}.json"
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+    with results_path.open("w", encoding="utf-8") as results_file:
+        json.dump(top_results, results_file, indent=2)
+
+    print(f"Best loss achieved: {study.best_value}")
+    print(f"Best parameter values: {study.best_params}")
+    print(f"Top {len(top_results)} trial results saved to {results_path}")
+    print("Hyperparameter optimization completed successfully.")
+
+    return 1
+
+def _test_optimization(optuna_res : str | Path):
+    global npy_lr_modify
+    
+    if len(variables) != 1:
+        raise ValueError("Hyperparameter optimization testing is only supported for a single variable at a time.")
+
+    optuna_res_path = Path(optuna_res) / f"top3_{variables[0]}.json"
+    if not optuna_res_path.is_file():
+        raise FileNotFoundError(f"Optuna results file not found: {optuna_res_path}")
+
+    with optuna_res_path.open("r", encoding="utf-8") as results_file:
+        top_results = json.load(results_file)
+
+    if not top_results:
+        raise ValueError("No trial results found in the Optuna results file.")
+
+    for trial in top_results:
+        params = trial["params"]
+        #model_kwargs_dict[variables[0]]["particle_hidden_sizes"] = [1024] + [params['particle_hidden_sizes']] * params['particle_hidden_length'] + [params['particle_hidden_sizes'] // 2] * 2
+        #model_kwargs_dict[variables[0]]["event_hidden_sizes"] = [64] + [params['event_hidden_sizes']] * params['event_hidden_length'] + [params['event_hidden_sizes'] // 4]
+        #model_kwargs_dict[variables[0]]["consolidation_hidden_sizes"] = [params['consolidation_hidden_sizes']] * params['consolidation_hidden_length'] + [8]
+        optimizer_kwargs_dict[variables[0]]["lr"] = params['learning_rate']
+        optimizer_kwargs_dict[variables[0]]["betas"] = (params['beta1'], params['beta2'])
+        optimizer_kwargs_dict[variables[0]]["weight_decay"] = params['weight_decay']
+        npy_lr_modify = True
+
+        losses = []
+        for _ in range(3):
+            loss = _train(20, save_model=False)
+            losses.append(loss)
+        avg_loss = sum(losses) / len(losses)
+        min_loss = min(losses)
+        print(f"Trial {trial['trial_number']} - Average Loss over 3 runs: {avg_loss:.6f}, Minimum Loss: {min_loss:.6f}")
 
 if __name__ == "__main__":
     import torch
     import matplotlib.pyplot as plt
     import numpy as np
     from functions_library import dataset_classes, neural_models, training_classes, model_training, data_loading, misc_functions, plotting_funcs
-    from functions_library.models_dicts import model_kwargs_dict, fields_dict, optimizer_kwargs_dict
+    from functions_library.models_dicts import model_kwargs_dict, fields_dict, optimizer_kwargs_dict, variable_kwargs_dict
     from pathlib import Path
     from datetime import date
     import time
+    import optuna as opt
+    import json
 
     #system_string = "Desktop/Masters" #Laptop path
     system_string = "Coding/Master" #Desktop path
 
     npy_training = "./subset_library" #Method to use preprocessed npy files for training and writing. Much faster but only small subset
-    variables = ["pt"]
+    npy_lr_modify = True
+    variables = ["isolation"]
 
     time_start = time.perf_counter()
-    _train()
+    #for i in range(3):
+    #    loss = _train(20, save_model=False)
+    #    print(f"Run {i+1} - Loss: {loss:.6f}")
     #_write("data_to_subset")
+    #_write("model_to_csv")
     #_plot("pseudo_roc_plot")
     #_test(100)
+    _optimize(10)
+    #_test_optimization("./optuna_results")
     time_end = time.perf_counter()
     print(f"Total execution time: {time_end - time_start:.2f} seconds")
 

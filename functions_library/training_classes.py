@@ -210,7 +210,7 @@ class RobustGaussianVarianceNLLLoss(_GaussianNLLBase):
         self,
         reduction: str = "mean",
         min_log_variance: float = -10.0,
-        max_log_variance: float = 7.0,
+        max_log_variance: float = 10.0,
         degrees_of_freedom: float = 4.0,
     ):
         super().__init__(reduction, min_log_variance, max_log_variance)

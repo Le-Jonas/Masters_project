@@ -90,16 +90,26 @@ class ParticleOriginNetwork(nn.Module):
         self.particle_branch = _make_branch(particle_size, particle_hidden_sizes)
         self.event_branch = _make_branch(event_size, event_hidden_sizes)
     
-        self.classifier = nn.Sequential(
-            nn.Linear(particle_hidden_sizes[-1] + event_hidden_sizes[-1], consolidation_hidden_sizes[0]),
-            nn.LayerNorm(consolidation_hidden_sizes[0]),
+        consolidation_layers = []
+        last_size = particle_hidden_sizes[-1] + event_hidden_sizes[-1]
+        for i in range(len(consolidation_hidden_sizes) - 1):
+            hidden_size = consolidation_hidden_sizes[i]
+            consolidation_layers.extend([
+                nn.Linear(last_size, hidden_size),
+                nn.LayerNorm(hidden_size),
+                nn.SiLU(),
+                nn.Dropout(0.15),
+            ])
+            last_size = hidden_size
+        hidden_size = consolidation_hidden_sizes[-1]
+        consolidation_layers.extend([
+            nn.Linear(last_size, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.SiLU(),
-            nn.Dropout(0.15),
-            nn.Linear(consolidation_hidden_sizes[0], consolidation_hidden_sizes[1]),
-            nn.LayerNorm(consolidation_hidden_sizes[1]),
-            nn.SiLU(),
-            nn.Linear(consolidation_hidden_sizes[1], output_size),
-        )
+            nn.Linear(hidden_size, output_size)
+        ])
+
+        self.classifier = nn.Sequential(*consolidation_layers)
 
     def encode(
         self,
@@ -195,17 +205,29 @@ class ParticlePairNetwork(nn.Module):
         self.particle1_branch = _make_branch(particle_size, particle_hidden_sizes)
         self.particle2_branch = _make_branch(particle_size, particle_hidden_sizes)
         self.event_branch = _make_branch(event_size, event_hidden_sizes)
-    
-        self.classifier = nn.Sequential(
-            nn.Linear(2 * particle_hidden_sizes[-1] + event_hidden_sizes[-1], consolidation_hidden_sizes[0]),
-            nn.LayerNorm(consolidation_hidden_sizes[0]),
-            nn.SiLU(),
-            nn.Dropout(0.15),
-            nn.Linear(consolidation_hidden_sizes[0], consolidation_hidden_sizes[1]),
-            nn.LayerNorm(consolidation_hidden_sizes[1]),
-            nn.SiLU(),
-            nn.Linear(consolidation_hidden_sizes[1], output_size),
-        )
+
+        consolidation_layers = []
+        last_size = 2 * particle_hidden_sizes[-1] + event_hidden_sizes[-1]
+        for i in range(len(consolidation_hidden_sizes)):
+            hidden_size = consolidation_hidden_sizes[i]
+            if i - 1 == len(consolidation_hidden_sizes):
+                consolidation_layers.extend([
+                    nn.Linear(last_size, hidden_size),
+                    nn.LayerNorm(hidden_size),
+                    nn.SiLU(),
+                    nn.Linear(hidden_size, output_size)
+                ])
+                break
+            consolidation_layers.extend([
+                nn.Linear(last_size, hidden_size),
+                nn.LayerNorm(hidden_size),
+                nn.SiLU(),
+                nn.Dropout(0.15),
+            ])
+            last_size = hidden_size
+        
+
+        self.classifier = nn.Sequential(*consolidation_layers)
 
     def encode(
         self,
